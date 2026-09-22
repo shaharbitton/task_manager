@@ -1,0 +1,2023 @@
+package com.example
+
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.animation.*
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.*
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.*
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.navigation.NavController
+import androidx.navigation.NavGraph.Companion.findStartDestination
+import androidx.navigation.compose.*
+import com.example.data.*
+import com.example.ui.*
+import com.example.ui.theme.*
+import coil.compose.AsyncImage
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.platform.testTag
+
+class MainActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
+        setContent {
+            TaskHubTheme {
+                Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                    TaskHubApp()
+                }
+            }
+        }
+    }
+}
+
+sealed class Screen(val route: String, val title: String, val icon: ImageVector) {
+    object Dashboard : Screen("dashboard", "Tasks", Icons.AutoMirrored.Filled.List)
+    object Chores : Screen("chores", "Chores", Icons.Filled.Face)
+    object ShoppingList : Screen("shopping", "Shopping", Icons.Filled.ShoppingBag)
+    object Store : Screen("store", "Store", Icons.Filled.ShoppingCart)
+    object FamilySettings : Screen("permissions", "Permissions", Icons.Filled.SupervisorAccount)
+}
+
+@Composable
+fun LanguageSelector(viewModel: TaskViewModel) {
+    val currentLang by viewModel.language.collectAsStateWithLifecycle()
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(20.dp))
+            .background(MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.85f))
+            .clickable { viewModel.toggleLanguage() }
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Icon(
+            imageVector = Icons.Default.Language,
+            contentDescription = "Language Selector",
+            modifier = Modifier.size(16.dp),
+            tint = MaterialTheme.colorScheme.onSecondaryContainer
+        )
+        Text(
+            text = if (currentLang == "HE") "עברית" else "English",
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onSecondaryContainer
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun TaskHubApp() {
+    val navController = rememberNavController()
+    val context = LocalContext.current
+    val application = remember { context.applicationContext as TaskApplication }
+    val viewModel: TaskViewModel = viewModel(
+        factory = TaskViewModelFactory(application.repository, context)
+    )
+
+    val users by viewModel.allUsers.collectAsStateWithLifecycle()
+    val currentUser by viewModel.currentUser.collectAsStateWithLifecycle()
+    val currentLang by viewModel.language.collectAsStateWithLifecycle()
+
+    val layoutDirection = if (currentLang == "HE") LayoutDirection.Rtl else LayoutDirection.Ltr
+
+    CompositionLocalProvider(
+        LocalLayoutDirection provides layoutDirection
+    ) {
+        if (currentUser == null) {
+            FamilyLoginSetupScreen(viewModel)
+        } else {
+            Scaffold(
+                bottomBar = {
+                    NavigationBar {
+                        val navBackStackEntry by navController.currentBackStackEntryAsState()
+                        val currentDestination = navBackStackEntry?.destination
+                        
+                        val navigationScreens = listOf<Screen>(Screen.Dashboard, Screen.Chores, Screen.ShoppingList, Screen.FamilySettings)
+
+                        navigationScreens.forEach { screen ->
+                            val labelText = when (screen) {
+                                Screen.Dashboard -> Localization.get("tasks", currentLang)
+                                Screen.Chores -> Localization.get("chores", currentLang)
+                                Screen.ShoppingList -> Localization.get("shopping", currentLang)
+                                Screen.Store -> Localization.get("store", currentLang)
+                                Screen.FamilySettings -> Localization.get("permissions", currentLang)
+                                else -> screen.title
+                            }
+                            NavigationBarItem(
+                                icon = { Icon(screen.icon, contentDescription = labelText) },
+                                label = { Text(labelText) },
+                                selected = currentDestination?.route == screen.route,
+                                onClick = {
+                                    navController.navigate(screen.route) {
+                                        popUpTo(navController.graph.findStartDestination().id) { saveState = false }
+                                        launchSingleTop = true
+                                        restoreState = false
+                                    }
+                                }
+                            )
+                        }
+                    }
+                }
+            ) { innerPadding ->
+                NavHost(navController, startDestination = Screen.Dashboard.route, modifier = Modifier.padding(innerPadding)) {
+                    composable(Screen.Dashboard.route) {
+                        DashboardScreen(viewModel, onNavigateToStore = { navController.navigate(Screen.Store.route) })
+                    }
+                    composable(Screen.Chores.route) {
+                        ChoresScreen(viewModel, onNavigateToStore = { navController.navigate(Screen.Store.route) })
+                    }
+                    composable(Screen.ShoppingList.route) {
+                        ShoppingListScreen(viewModel)
+                    }
+                    composable(Screen.Store.route) {
+                        StoreScreen(viewModel, onBack = { navController.popBackStack() })
+                    }
+                    composable(Screen.FamilySettings.route) {
+                        FamilySettingsScreen(viewModel)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun FamilyLoginSetupScreen(viewModel: TaskViewModel) {
+    val users by viewModel.allUsers.collectAsStateWithLifecycle()
+    val currentLang by viewModel.language.collectAsStateWithLifecycle()
+    var isCreatingFamily by remember { mutableStateOf(false) }
+    var isJoiningFamily by remember { mutableStateOf(false) }
+    var familyName by remember { mutableStateOf("") }
+    var managerName by remember { mutableStateOf("") }
+    var familyJoinCode by remember { mutableStateOf("") }
+
+    var loginPromptUser by remember { mutableStateOf<User?>(null) }
+    var pinInput by remember { mutableStateOf("") }
+    var isSettingPin by remember { mutableStateOf(false) }
+    var pinError by remember { mutableStateOf(false) }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(16.dp)
+                .statusBarsPadding()
+        ) {
+            LanguageSelector(viewModel)
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(24.dp)
+                .statusBarsPadding()
+                .navigationBarsPadding(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Icon(
+                imageVector = Icons.Default.HomeWork,
+                contentDescription = null,
+                modifier = Modifier.size(72.dp),
+                tint = MaterialTheme.colorScheme.primary
+            )
+            
+            Spacer(Modifier.height(16.dp))
+            
+            Text(
+                text = Localization.get("welcome_to_familyhub", currentLang),
+                style = MaterialTheme.typography.headlineLarge,
+                fontWeight = FontWeight.ExtraBold,
+                color = MaterialTheme.colorScheme.primary,
+                textAlign = TextAlign.Center
+            )
+            
+            Text(
+                text = Localization.get("welcome_subtitle", currentLang),
+                style = MaterialTheme.typography.bodyMedium,
+                color = Color.Gray,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+            )
+
+            Spacer(Modifier.height(32.dp))
+
+            if (isCreatingFamily) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(24.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                ) {
+                    Column(Modifier.padding(24.dp)) {
+                        Text(
+                            text = Localization.get("create_family_manager", currentLang),
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(Modifier.height(16.dp))
+
+                        OutlinedTextField(
+                            value = familyName,
+                            onValueChange = { familyName = it },
+                            label = { Text(Localization.get("family_name_placeholder", currentLang)) },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                        Spacer(Modifier.height(12.dp))
+
+                        OutlinedTextField(
+                            value = managerName,
+                            onValueChange = { managerName = it },
+                            label = { Text(Localization.get("your_name_placeholder", currentLang)) },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                        Spacer(Modifier.height(20.dp))
+
+                        Button(
+                            onClick = {
+                                if (familyName.isNotBlank() && managerName.isNotBlank()) {
+                                    viewModel.createFamily(familyName, managerName)
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp),
+                            enabled = familyName.isNotBlank() && managerName.isNotBlank()
+                        ) {
+                            Text(Localization.get("create_signin", currentLang))
+                        }
+
+                        Spacer(Modifier.height(8.dp))
+
+                        TextButton(
+                            onClick = { isCreatingFamily = false },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(Localization.get("back_to_login", currentLang))
+                        }
+                    }
+                }
+            } else if (isJoiningFamily) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(24.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                ) {
+                    Column(Modifier.padding(24.dp)) {
+                        Text(
+                            text = if (currentLang == "HE") "התחברות למשפחה קיימת" else "Connect to Existing Family",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            text = if (currentLang == "HE") 
+                                "הזן את קוד הזיהוי המשפחתי (כדי לבחור פרופיל) או את הקוד האישי שלך (להתחברות ישירה)." 
+                                else "Enter your unique family identifier code (to pick profile) or personal code (to log in directly).",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.Gray
+                        )
+                        Spacer(Modifier.height(16.dp))
+
+                        val context = LocalContext.current
+                        OutlinedTextField(
+                            value = familyJoinCode,
+                            onValueChange = { familyJoinCode = it.replace(" ", "") },
+                            label = { Text(if (currentLang == "HE") "קוד זיהוי (למשל: 485926-15)" else "Identifier (e.g., 485926-15)") },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp),
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                        )
+                        Spacer(Modifier.height(20.dp))
+
+                        Button(
+                            onClick = {
+                                val cleanInput = familyJoinCode.trim()
+                                if (cleanInput.isBlank()) return@Button
+
+                                if (cleanInput.contains("-")) {
+                                    val parts = cleanInput.split("-")
+                                    val fPart = parts[0].trim()
+                                    val uPart = parts[1].trim()
+                                    val fId = if (fPart.all { it.isDigit() }) "family_$fPart" else fPart
+                                    val uId = uPart.toIntOrNull()
+                                    
+                                    if (uId != null) {
+                                        viewModel.joinAndSelectProfile(fId, uId)
+                                        isJoiningFamily = false
+                                        android.widget.Toast.makeText(
+                                            context,
+                                            if (currentLang == "HE") "מתחבר ישירות לפרופיל..." else "Connecting directly to profile...",
+                                            android.widget.Toast.LENGTH_SHORT
+                                        ).show()
+                                    } else {
+                                        android.widget.Toast.makeText(
+                                            context,
+                                            if (currentLang == "HE") "קוד שגוי או לא תקין" else "Invalid code identifier format",
+                                            android.widget.Toast.LENGTH_SHORT
+                                        ).show()
+                                    }
+                                } else {
+                                    val fId = if (cleanInput.all { it.isDigit() }) "family_$cleanInput" else cleanInput
+                                    viewModel.joinFamily(fId)
+                                    isJoiningFamily = false
+                                    android.widget.Toast.makeText(
+                                        context,
+                                        if (currentLang == "HE") "מתחבר למשפחה..." else "Connecting to family...",
+                                        android.widget.Toast.LENGTH_SHORT
+                                        ).show()
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp),
+                            enabled = familyJoinCode.isNotBlank()
+                        ) {
+                            Text(if (currentLang == "HE") "התחבר" else "Connect")
+                        }
+
+                        Spacer(Modifier.height(8.dp))
+
+                        TextButton(
+                            onClick = { isJoiningFamily = false },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(Localization.get("back_to_login", currentLang))
+                        }
+                    }
+                }
+            } else {
+                if (users.isNotEmpty()) {
+                    Text(
+                        text = Localization.get("login_to_family_board", currentLang),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.align(Alignment.Start)
+                    )
+                    Spacer(Modifier.height(12.dp))
+
+                    LazyColumn(
+                        modifier = Modifier
+                            .weight(1f, fill = false)
+                            .fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        items(users) { user ->
+                            val roleText = if (user.roleId.endsWith("MANAGER")) {
+                                if (currentLang == "HE") "מנהל משפחה" else "Family Manager"
+                            } else {
+                                if (user.role == UserRole.ADULT) {
+                                    if (currentLang == "HE") "הורה" else "Parent"
+                                } else {
+                                    if (currentLang == "HE") "ילד/ה" else "Child"
+                                }
+                            }
+                            Card(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        val passcode = user.passcode
+                                        if (user.role == UserRole.ADULT) {
+                                            if (passcode.isNullOrBlank()) {
+                                                loginPromptUser = user
+                                                isSettingPin = true
+                                                pinInput = ""
+                                                pinError = false
+                                            } else {
+                                                loginPromptUser = user
+                                                isSettingPin = false
+                                                pinInput = ""
+                                                pinError = false
+                                            }
+                                        } else {
+                                            viewModel.selectUser(user.id)
+                                        }
+                                    },
+                                shape = RoundedCornerShape(16.dp),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(16.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(44.dp)
+                                            .background(MaterialTheme.colorScheme.primary, CircleShape),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(
+                                            text = user.name.take(1).uppercase(),
+                                            color = Color.White,
+                                            fontWeight = FontWeight.Bold,
+                                            style = MaterialTheme.typography.titleMedium
+                                        )
+                                    }
+                                    Spacer(Modifier.width(16.dp))
+                                    Column {
+                                        Text(
+                                            text = user.name,
+                                            fontWeight = FontWeight.Bold,
+                                            style = MaterialTheme.typography.bodyLarge
+                                        )
+                                        Text(
+                                            text = roleText,
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = Color.Gray
+                                        )
+                                    }
+                                    Spacer(Modifier.weight(1f))
+                                    Icon(
+                                        imageVector = Icons.Default.Login,
+                                        contentDescription = "Log In",
+                                        tint = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    Spacer(Modifier.height(16.dp))
+
+                    Button(
+                        onClick = { isCreatingFamily = true },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text(Localization.get("join_as_leader", currentLang))
+                    }
+
+                    Spacer(Modifier.height(8.dp))
+
+                    OutlinedButton(
+                        onClick = { isJoiningFamily = true },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text(if (currentLang == "HE") "התחברות למשפחה אחרת עם קוד" else "Connect to Another Family with Code")
+                    }
+                } else {
+                    Button(
+                        onClick = { isCreatingFamily = true },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text(Localization.get("start_new_family", currentLang))
+                    }
+
+                    Spacer(Modifier.height(8.dp))
+
+                    OutlinedButton(
+                        onClick = { isJoiningFamily = true },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text(if (currentLang == "HE") "התחברות למשפחה קיימת עם קוד" else "Connect to Existing Family with Code")
+                    }
+                }
+            }
+        }
+    }
+
+    if (loginPromptUser != null) {
+        val targetUser = loginPromptUser!!
+        AlertDialog(
+            onDismissRequest = { loginPromptUser = null },
+            title = {
+                Text(
+                    text = if (isSettingPin) {
+                        if (currentLang == "HE") "הגדרת קוד גישה לפרופיל" else "Set Profile PIN"
+                    } else {
+                        if (currentLang == "HE") "הזנת קוד גישה לפרופיל ${targetUser.name}" else "Enter PIN for ${targetUser.name}"
+                    },
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        text = if (isSettingPin) {
+                            if (currentLang == "HE") "אנא קבע/י קוד סודי בן 4 ספרות כדי למנוע מעקף הרשאות על ידי ילדים" else "Please set a 4-digit PIN code to secure your parental settings"
+                        } else {
+                            if (currentLang == "HE") "הזן/י את קוד הגישה בן 4 הספרות של ${targetUser.name}" else "Please type the 4-digit security PIN for ${targetUser.name}"
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color.Gray,
+                        modifier = Modifier.padding(bottom = 16.dp)
+                    )
+                    
+                    OutlinedTextField(
+                        value = pinInput,
+                        onValueChange = { input ->
+                            if (input.all { it.isDigit() } && input.length <= 4) {
+                                pinInput = input
+                                pinError = false
+                            }
+                        },
+                        label = { Text(if (currentLang == "HE") "קוד סודי (4 ספרות)" else "PIN Code (4 digits)") },
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Number
+                        ),
+                        singleLine = true,
+                        isError = pinError,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("pin_code_input")
+                    )
+                    
+                    if (pinError) {
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            text = if (isSettingPin) {
+                                if (currentLang == "HE") "הקוד חייב להכיל 4 ספרות" else "PIN must be exactly 4 digits"
+                            } else {
+                                if (currentLang == "HE") "קוד גישה לא נכון, נסו שנית" else "Incorrect PIN, please try again"
+                            },
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (isSettingPin) {
+                            if (pinInput.length == 4) {
+                                viewModel.updateMemberPasscode(targetUser.id, pinInput)
+                                viewModel.selectUser(targetUser.id)
+                                loginPromptUser = null
+                            } else {
+                                pinError = true
+                            }
+                        } else {
+                            if (pinInput == targetUser.passcode) {
+                                viewModel.selectUser(targetUser.id)
+                                loginPromptUser = null
+                            } else {
+                                pinError = true
+                            }
+                        }
+                    },
+                    modifier = Modifier.testTag("pin_confirm_button")
+                ) {
+                    Text(if (currentLang == "HE") "אישור" else "Confirm")
+                }
+            },
+            dismissButton = {
+                Row {
+                    if (isSettingPin) {
+                        TextButton(
+                            onClick = {
+                                viewModel.selectUser(targetUser.id)
+                                loginPromptUser = null
+                            },
+                            modifier = Modifier.testTag("pin_skip_button")
+                        ) {
+                            Text(if (currentLang == "HE") "דלג" else "Skip")
+                        }
+                        Spacer(Modifier.width(8.dp))
+                    }
+                    TextButton(onClick = { loginPromptUser = null }) {
+                        Text(if (currentLang == "HE") "ביטול" else "Cancel")
+                    }
+                }
+            }
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun DashboardScreen(viewModel: TaskViewModel, onNavigateToStore: () -> Unit) {
+    val tasks by viewModel.allTasks.collectAsStateWithLifecycle()
+    val currentUser by viewModel.currentUser.collectAsStateWithLifecycle()
+    val currentUserRole by viewModel.currentUserRole.collectAsStateWithLifecycle()
+    val currentLang by viewModel.language.collectAsStateWithLifecycle()
+    var showAddTaskDialog by remember { mutableStateOf(false) }
+
+    val regularTasks = remember(tasks, currentUser, currentUserRole) {
+        val user = currentUser ?: return@remember emptyList()
+        val allowSeeOthers = currentUserRole?.allowSeeOtherTasks == true || currentUserRole?.isManager == true
+        val filtered = if (!allowSeeOthers && user.role == UserRole.CHILD) {
+            tasks.filter { it.assignedToUserId == user.id || it.assignedToUserId == null }
+        } else {
+            tasks
+        }
+        filtered.filter { it.source != TaskSource.STORE_REDEMPTION }
+    }
+
+    val pendingRedemptions = remember(tasks, currentUser, currentUserRole) {
+        val user = currentUser ?: return@remember emptyList()
+        val isManagerOrAdult = currentUserRole?.isManager == true || user.role == UserRole.ADULT
+        if (isManagerOrAdult) {
+            tasks.filter { it.source == TaskSource.STORE_REDEMPTION && it.status == TaskStatus.PENDING_APPROVAL }
+        } else {
+            emptyList()
+        }
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = {
+                    Column {
+                        Text(Localization.get("taskhub_dashboard", currentLang), fontWeight = FontWeight.Bold)
+                        val loggedInText = if (currentLang == "HE") "מחובר בתור" else "Logged in as"
+                        Text(
+                            text = "${currentUser?.familyName ?: ""} • $loggedInText ${currentUser?.name ?: ""}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.secondary
+                        )
+                    }
+                },
+                actions = {
+                    IconButton(
+                        onClick = { viewModel.selectUser(null) },
+                        modifier = Modifier.testTag("switch_profile_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.SwitchAccount,
+                            contentDescription = if (currentLang == "HE") "החלף פרופיל" else "Switch Profile",
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    LanguageSelector(viewModel)
+                }
+            )
+        },
+        floatingActionButton = {
+            val allowCreate = currentUserRole?.allowCreateTasks == true || currentUserRole?.isManager == true
+            if (allowCreate) {
+                FloatingActionButton(onClick = { showAddTaskDialog = true }, containerColor = MaterialTheme.colorScheme.primary) {
+                    Icon(Icons.Default.Add, contentDescription = Localization.get("new_task", currentLang))
+                }
+            }
+        }
+    ) { padding ->
+        if (regularTasks.isEmpty() && pendingRedemptions.isEmpty()) {
+            Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(Icons.Default.Info, contentDescription = null, Modifier.size(64.dp), tint = Color.Gray)
+                    val allowCreate = currentUserRole?.allowCreateTasks == true || currentUserRole?.isManager == true
+                    val noTasksText = if (allowCreate) {
+                        if (currentLang == "HE") "אין משימות עדיין. לחץ/י על + כדי להוסיף מטרה." else "No tasks yet. Tap + to add."
+                    } else {
+                        if (currentLang == "HE") "אין משימות פעילות עבורך." else "No tasks assigned to you."
+                    }
+                    Text(
+                        text = noTasksText,
+                        color = Color.Gray
+                    )
+                }
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize().padding(padding),
+                contentPadding = PaddingValues(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                if (pendingRedemptions.isNotEmpty()) {
+                    item {
+                        val requestsTitle = if (currentLang == "HE") "בקשות פדיית הטבות שממתינות למימוש" else "Store Redemptions Awaiting Fulfillment"
+                        Text(
+                            text = requestsTitle,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(vertical = 4.dp)
+                        )
+                    }
+                    items(pendingRedemptions) { redTask ->
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
+                        ) {
+                            Column(Modifier.padding(16.dp)) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text(
+                                            text = redTask.title,
+                                            style = MaterialTheme.typography.titleMedium,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.onPrimaryContainer
+                                        )
+                                        Spacer(Modifier.height(4.dp))
+                                        Text(
+                                            text = redTask.description,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = Color.DarkGray
+                                        )
+                                    }
+                                    
+                                    IconButton(
+                                        onClick = onNavigateToStore,
+                                        modifier = Modifier.size(40.dp).background(MaterialTheme.colorScheme.surface, CircleShape)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.ShoppingCart,
+                                            contentDescription = "Go to Store",
+                                            tint = MaterialTheme.colorScheme.primary
+                                        )
+                                    }
+                                }
+                                
+                                Spacer(Modifier.height(12.dp))
+                                
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.End
+                                ) {
+                                    Button(
+                                        onClick = { viewModel.completeTask(redTask) },
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = MaterialTheme.colorScheme.primary,
+                                            contentColor = Color.White
+                                        )
+                                    ) {
+                                        val completeBtnText = if (currentLang == "HE") "סמן כמומש והסתיים" else "Mark as Fulfilled"
+                                        Text(completeBtnText)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    item {
+                        HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+                    }
+                }
+
+                val groupedTasks = regularTasks.groupBy { it.priority }
+                Priority.values().reversed().forEach { priority ->
+                    val priorityTasks = groupedTasks[priority] ?: emptyList()
+                    if (priorityTasks.isNotEmpty()) {
+                        item {
+                            PriorityHeader(priority, currentLang)
+                        }
+                        items(priorityTasks) { task ->
+                            TaskItem(
+                                task = task,
+                                currentUser = currentUser,
+                                currentUserRole = currentUserRole,
+                                onComplete = { viewModel.completeTask(task) },
+                                onUncomplete = { viewModel.uncompleteTask(task) },
+                                onDelete = { viewModel.deleteTask(task) }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (showAddTaskDialog) {
+        AddTaskDialog(languageCode = currentLang, onDismiss = { showAddTaskDialog = false }, onAdd = { title, priority, source ->
+            viewModel.addTask(title = title, priority = priority, source = source)
+            showAddTaskDialog = false
+        })
+    }
+}
+
+@Composable
+fun TaskItem(
+    task: Task,
+    currentUser: User?,
+    currentUserRole: FamilyRole?,
+    onComplete: () -> Unit,
+    onUncomplete: () -> Unit,
+    onDelete: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+    ) {
+        Row(
+            modifier = Modifier.padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    text = task.title, 
+                    style = MaterialTheme.typography.bodyLarge, 
+                    fontWeight = FontWeight.Bold,
+                    textDecoration = if (task.status == TaskStatus.DONE) androidx.compose.ui.text.style.TextDecoration.LineThrough else null,
+                    color = if (task.status == TaskStatus.DONE) Color.Gray else Color.Unspecified
+                )
+                if (task.description.isNotEmpty()) {
+                    Text(task.description, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                }
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 4.dp)) {
+                    val icon = when(task.source) {
+                        TaskSource.WHATSAPP -> Icons.AutoMirrored.Filled.Send
+                        TaskSource.CALENDAR -> Icons.Default.DateRange
+                        TaskSource.EMAIL -> Icons.Default.Email
+                        TaskSource.CALL -> Icons.Default.Call
+                        else -> Icons.Default.Edit
+                    }
+                    Icon(icon, contentDescription = null, modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.secondary)
+                    Spacer(Modifier.width(4.dp))
+                    Text(task.source.name.lowercase(), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.secondary)
+                }
+            }
+            
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                val allowDelete = currentUserRole?.allowDeleteTasks == true || currentUserRole?.isManager == true
+                if (allowDelete) {
+                    IconButton(onClick = onDelete) {
+                        Icon(Icons.Default.Delete, contentDescription = "Delete Task", tint = MaterialTheme.colorScheme.error)
+                    }
+                }
+
+                Checkbox(
+                    checked = task.status == TaskStatus.DONE,
+                    onCheckedChange = { isChecked ->
+                        if (isChecked) onComplete() else onUncomplete()
+                    }
+                )
+            }
+        }
+    }
+}
+
+val UserColorsList = listOf(
+    Color(0xFF3F51B5), // Indigo
+    Color(0xFF009688), // Teal
+    Color(0xFFE91E63), // Pink
+    Color(0xFF9C27B0), // Purple
+    Color(0xFFFF9800), // Orange
+    Color(0xFF03A9F4), // Light Blue
+    Color(0xFF4CAF50), // Green
+)
+
+fun getAssigneeColor(userId: Int?): Color {
+    if (userId == null || userId < 0) return Color(0xFF757575)
+    return UserColorsList[userId % UserColorsList.size]
+}
+
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
+@Composable
+fun StoreWithFulfillment(viewModel: TaskViewModel) {
+    // Redundant helper
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ChoresScreen(viewModel: TaskViewModel, onNavigateToStore: () -> Unit) {
+    val chores by viewModel.allChores.collectAsStateWithLifecycle()
+    val users by viewModel.allUsers.collectAsStateWithLifecycle()
+    val currentUser by viewModel.currentUser.collectAsStateWithLifecycle()
+    val currentUserRole by viewModel.currentUserRole.collectAsStateWithLifecycle()
+    val currentLang by viewModel.language.collectAsStateWithLifecycle()
+    var showAddChoreDialog by remember { mutableStateOf(false) }
+
+    val kidsList = remember(users) {
+        users.filter { it.role == UserRole.CHILD }
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text(Localization.get("menu_chores", currentLang), fontWeight = FontWeight.Bold) },
+                actions = {
+                    LanguageSelector(viewModel)
+                }
+            )
+        },
+        floatingActionButton = {
+            val isAdultOrManager = currentUserRole?.isManager == true || currentUser?.role == UserRole.ADULT
+            if (isAdultOrManager) {
+                FloatingActionButton(onClick = { showAddChoreDialog = true }, containerColor = MaterialTheme.colorScheme.primary) {
+                    Icon(Icons.Default.Add, contentDescription = Localization.get("new_family_chore", currentLang))
+                }
+            }
+        }
+    ) { padding ->
+        val activeUserId = currentUser?.id
+        val filteredChores = remember(chores, currentUser, currentUserRole) {
+            val role = currentUserRole
+            if (currentUser?.role == UserRole.CHILD && role?.allowSeeOtherTasks != true) {
+                chores.filter { it.assignedToUserId == activeUserId }
+            } else {
+                chores
+            }
+        }
+
+        if (filteredChores.isEmpty()) {
+            Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(Icons.Default.Face, contentDescription = null, Modifier.size(64.dp), tint = Color.Gray)
+                    val isAdultOrManager = currentUserRole?.isManager == true || currentUser?.role == UserRole.ADULT
+                    val noChoresText = if (isAdultOrManager) {
+                        if (currentLang == "HE") "אין מטלות יומיות עדיין. לחץ/י על + כדי להגדיר משימה לילדים." else "No daily chores yet. Tap + to assign a chore to kids."
+                    } else {
+                        if (currentLang == "HE") "מצוין! אין לך מטלות יומיות שממתינות לביצוע." else "Awesome! You have no pending daily chores."
+                    }
+                    Text(noChoresText, color = Color.Gray)
+                }
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize().padding(padding),
+                contentPadding = PaddingValues(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                items(filteredChores) { chore ->
+                    val assigneeName = users.find { it.id == chore.assignedToUserId }?.name ?: "Everyone"
+                    val isChoreOwner = chore.assignedToUserId == activeUserId
+                    val isAdult = currentUser?.role == UserRole.ADULT
+
+                    Card(
+                        modifier = Modifier.fillMaxWidth().testTag("chore_card_${chore.id}"),
+                        border = if (chore.status == TaskStatus.PENDING_APPROVAL) BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else null
+                    ) {
+                        Column(Modifier.padding(16.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(36.dp)
+                                        .background(getAssigneeColor(chore.assignedToUserId), CircleShape),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(assigneeName.take(1).uppercase(), color = Color.White, fontWeight = FontWeight.Bold)
+                                }
+                                Spacer(Modifier.width(12.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        text = chore.title,
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        textDecoration = if (chore.status == TaskStatus.DONE) androidx.compose.ui.text.style.TextDecoration.LineThrough else null,
+                                        color = if (chore.status == TaskStatus.DONE) Color.Gray else Color.Unspecified
+                                    )
+                                    val assignedToLabel = if (currentLang == "HE") "באחריות" else "Assigned to"
+                                    val pointsLabel = if (currentLang == "HE") "נקודות" else "points"
+                                    Text(
+                                        text = "$assignedToLabel: $assigneeName • ${chore.rewardPoints} $pointsLabel",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = Color.Gray
+                                    )
+                                }
+                                
+                                // Manage button (Delete)
+                                val canDelete = currentUserRole?.allowDeleteTasks == true || currentUserRole?.isManager == true
+                                if (canDelete) {
+                                    IconButton(onClick = { viewModel.deleteTask(chore) }) {
+                                        Icon(Icons.Default.Delete, contentDescription = "Delete Chore", tint = MaterialTheme.colorScheme.error)
+                                    }
+                                }
+                            }
+                            
+                            Spacer(Modifier.height(12.dp))
+                            
+                            // Status specific operational layouts
+                            when (chore.status) {
+                                TaskStatus.TODO -> {
+                                    Button(
+                                        onClick = { viewModel.completeTask(chore) },
+                                        enabled = isChoreOwner || isAdult,
+                                        modifier = Modifier.fillMaxWidth().testTag("complete_chore_${chore.id}"),
+                                        shape = RoundedCornerShape(12.dp)
+                                    ) {
+                                        Text(if (currentLang == "HE") "סימנתי כבוצע! (שלח לאישור הורה)" else "Done! (Send for approval)")
+                                    }
+                                }
+                                TaskStatus.PENDING_APPROVAL -> {
+                                    if (isAdult) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            Button(
+                                                onClick = { viewModel.approveChore(chore, true) },
+                                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                                                modifier = Modifier.weight(1f).testTag("approve_chore_${chore.id}"),
+                                                shape = RoundedCornerShape(12.dp)
+                                            ) {
+                                                Icon(Icons.Default.Check, contentDescription = null)
+                                                Spacer(Modifier.width(4.dp))
+                                                Text(if (currentLang == "HE") "אשר וסמן כהושלם" else "Approve & Reward")
+                                            }
+                                            OutlinedButton(
+                                                onClick = { viewModel.approveChore(chore, false) },
+                                                colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.error),
+                                                modifier = Modifier.weight(1f).testTag("reject_chore_${chore.id}"),
+                                                shape = RoundedCornerShape(12.dp)
+                                            ) {
+                                                Icon(Icons.Default.Close, contentDescription = null)
+                                                Spacer(Modifier.width(4.dp))
+                                                Text(if (currentLang == "HE") "דחה / בטל" else "Reject")
+                                            }
+                                        }
+                                    } else {
+                                        Surface(
+                                            color = MaterialTheme.colorScheme.secondaryContainer,
+                                            shape = RoundedCornerShape(8.dp),
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Text(
+                                                text = if (currentLang == "HE") "ממתין לאישור הורה לקבלת הנקודות..." else "Pending parental approval to receive points...",
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                                modifier = Modifier.padding(12.dp),
+                                                textAlign = TextAlign.Center
+                                            )
+                                        }
+                                    }
+                                }
+                                TaskStatus.DONE -> {
+                                    OutlinedButton(
+                                        onClick = { viewModel.unapproveChore(chore) },
+                                        enabled = isAdult,
+                                        modifier = Modifier.fillMaxWidth().testTag("reset_chore_${chore.id}"),
+                                        shape = RoundedCornerShape(12.dp)
+                                    ) {
+                                        Text(if (currentLang == "HE") "מטלה הושלמה (החזר למצב פעיל)" else "Chore Completed (Re-open)")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (showAddChoreDialog) {
+        AddChoreDialog(
+            languageCode = currentLang, 
+            familyMembers = kidsList, 
+            onDismiss = { showAddChoreDialog = false }, 
+            onAdd = { title, points, kidId ->
+                viewModel.addTask(title = title, isChore = true, assignedToUserId = kidId, rewardPoints = points)
+                showAddChoreDialog = false
+            }
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun FamilySettingsScreen(viewModel: TaskViewModel) {
+    val users by viewModel.allUsers.collectAsStateWithLifecycle()
+    val allFamilyRoles by viewModel.allFamilyRoles.collectAsStateWithLifecycle()
+    val currentUser by viewModel.currentUser.collectAsStateWithLifecycle()
+    val currentUserRole by viewModel.currentUserRole.collectAsStateWithLifecycle()
+    val familyId by viewModel.familyId.collectAsStateWithLifecycle()
+    val currentLang by viewModel.language.collectAsStateWithLifecycle()
+
+    var showAddMemberDialog by remember { mutableStateOf(false) }
+    val clipboardManager = androidx.compose.ui.platform.LocalClipboardManager.current
+    val context = LocalContext.current
+
+    var showResetPromptDialog by remember { mutableStateOf(false) }
+    var resetFamilyNameInput by remember { mutableStateOf("") }
+    var resetManagerNameInput by remember { mutableStateOf("") }
+
+    val familyCodeOnly = familyId.removePrefix("family_")
+    val inviteCodeFull = "$familyCodeOnly"
+
+    val inviteLabelTitle = if (currentLang == "HE") "הזמנת בני משפחה ללוח" else "Invite Family Members"
+    val inviteSubtitle = if (currentLang == "HE") "שתפו את הקוד הבא עם בני המשפחה כדי לחבר אותם ללוח!" else "Share this unique code to connect your family!"
+    val codeLabel = if (currentLang == "HE") "קוד זיהוי משפחתי לחיבור:" else "Family Connection Code:"
+    val copyButtonText = if (currentLang == "HE") "העתק קוד משפחתי" else "Copy Code"
+    val profilesLabelText = if (currentLang == "HE") "ניהול פרופילים והרשאות בקבוצה" else "Manage Profiles & System Permissions"
+    
+    val currentUserIsAdmin = currentUserRole?.isManager == true || currentUser?.role == UserRole.ADULT
+    val addMemberButtonText = if (currentLang == "HE") "הוסף פרופיל חדש" else "Create New Profile"
+
+    val rolesAndPermsText = if (currentLang == "HE") "הרשאות וסמכויות בנייד:" else "Interactive Device Permissions:"
+    val allowCreateText = if (currentLang == "HE") "רשאי להוסיף משימות חדשות" else "Allowed to yield/add tasks"
+    val allowDeleteText = if (currentLang == "HE") "רשאי למחוק משימות / מטלות" else "Allowed to wipe/delete tasks"
+    val allowSeeOthersText = if (currentLang == "HE") "רשאי לראות משימות של אחרים" else "Allowed to see other profiles"
+    val adminDescText = if (currentLang == "HE") "פרופיל אדמין - גישה מלאה לכלל המערכת ללא הגבלות." else "Admin Profile - Complete unrestricted root controller."
+    val deleteUserDesc = if (currentLang == "HE") "מחק משתמש" else "Delete User"
+    val noUsersFoundText = if (currentLang == "HE") "אין פרופילים פעילים במשפחה." else "No active family member profiles found."
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text(Localization.get("permissions", currentLang), fontWeight = FontWeight.Bold) },
+                actions = {
+                    if (currentUserIsAdmin) {
+                        Button(
+                            onClick = { showAddMemberDialog = true },
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Icon(Icons.Default.Add, contentDescription = null)
+                            Spacer(Modifier.width(4.dp))
+                            Text(addMemberButtonText)
+                        }
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    LanguageSelector(viewModel)
+                }
+            )
+        }
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f)),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f))
+            ) {
+                Column(Modifier.padding(16.dp)) {
+                    Text(inviteLabelTitle, fontWeight = FontWeight.ExtraBold, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
+                    Spacer(Modifier.height(4.dp))
+                    Text(inviteSubtitle, style = MaterialTheme.typography.bodyMedium, color = Color.Gray)
+                    Spacer(Modifier.height(16.dp))
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(MaterialTheme.colorScheme.surface)
+                            .padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column {
+                            Text(codeLabel, style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                            Text(inviteCodeFull, style = MaterialTheme.typography.headlineMedium.copy(fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace), fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.primary)
+                        }
+
+                        Button(
+                            onClick = {
+                                val annotatedText = androidx.compose.ui.text.AnnotatedString(inviteCodeFull)
+                                clipboardManager.setText(annotatedText)
+                                android.widget.Toast.makeText(
+                                    context,
+                                    if (currentLang == "HE") "הקוד הועתק לפנקס בהצלחה!" else "Code copied to clipboard!",
+                                    android.widget.Toast.LENGTH_SHORT
+                                ).show()
+                            },
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Icon(Icons.Default.ContentCopy, contentDescription = "Copy")
+                            Spacer(Modifier.width(4.dp))
+                            Text(if (currentLang == "HE") "העתק" else "Copy")
+                        }
+                    }
+                }
+            }
+
+            if (users.isEmpty()) {
+                Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
+                    Text(noUsersFoundText, color = Color.Gray)
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    items(users) { user ->
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                        ) {
+                            Column(Modifier.padding(16.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(40.dp)
+                                            .background(
+                                                if (user.role == UserRole.ADULT) MaterialTheme.colorScheme.primaryContainer 
+                                                else MaterialTheme.colorScheme.secondaryContainer,
+                                                CircleShape
+                                            ),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(
+                                            text = user.name.take(1),
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (user.role == UserRole.ADULT) MaterialTheme.colorScheme.onPrimaryContainer 
+                                                    else MaterialTheme.colorScheme.onSecondaryContainer
+                                        )
+                                    }
+                                    Spacer(Modifier.width(12.dp))
+                                    Column(Modifier.weight(1f)) {
+                                        Text(user.name, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyLarge)
+                                        val userRole = allFamilyRoles.find { it.id == user.roleId }
+                                        val isUserManager = userRole?.isManager == true || user.roleId.endsWith("MANAGER")
+                                        val roleText = if (isUserManager) {
+                                            if (currentLang == "HE") "מנהל / מארגן" else "Manager / Organizer"
+                                        } else {
+                                            if (user.role == UserRole.ADULT) {
+                                                if (currentLang == "HE") "מבוגר / הורה" else "Adult / Parent"
+                                            } else {
+                                                if (currentLang == "HE") "ילד / ילדה" else "Kid / Child"
+                                            }
+                                        }
+                                        Text(
+                                            text = roleText,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.secondary
+                                        )
+                                        
+                                        val personalCode = "${familyCodeOnly}-${user.id}"
+                                        Spacer(Modifier.height(6.dp))
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(6.dp))
+                                                .background(MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f))
+                                                .clickable {
+                                                    val annotatedText = androidx.compose.ui.text.AnnotatedString(personalCode)
+                                                    clipboardManager.setText(annotatedText)
+                                                    android.widget.Toast.makeText(
+                                                        context,
+                                                        if (currentLang == "HE") "קוד גישה אישי הועתק לפנקס!" else "Personal code copied!",
+                                                        android.widget.Toast.LENGTH_SHORT
+                                                    ).show()
+                                                }
+                                                .padding(horizontal = 8.dp, vertical = 4.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Key,
+                                                contentDescription = "Personal Code",
+                                                modifier = Modifier.size(12.dp),
+                                                tint = MaterialTheme.colorScheme.secondary
+                                            )
+                                            Text(
+                                                text = if (currentLang == "HE") "קוד אישי: $personalCode" else "Personal Code: $personalCode",
+                                                style = MaterialTheme.typography.labelSmall.copy(fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace),
+                                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
+                                    }
+                                    
+                                    if (user.id != currentUser?.id && currentUserIsAdmin) {
+                                        IconButton(onClick = { viewModel.deleteUser(user) }) {
+                                            Icon(Icons.Default.Delete, contentDescription = deleteUserDesc, tint = MaterialTheme.colorScheme.error)
+                                        }
+                                    }
+                                }
+
+                                Spacer(Modifier.height(12.dp))
+                                HorizontalDivider()
+                                Spacer(Modifier.height(12.dp))
+
+                                Text(rolesAndPermsText, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium)
+                                Spacer(Modifier.height(8.dp))
+
+                                val userRole = allFamilyRoles.find { it.id == user.roleId }
+                                val isUserRoleManager = userRole?.isManager == true || user.roleId.endsWith("MANAGER")
+                                if (isUserRoleManager) {
+                                    Text(
+                                        text = adminDescText,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = Color.Gray
+                                    )
+                                } else {
+                                    val canEditPermissions = currentUserRole?.isManager == true || currentUser?.role == UserRole.ADULT
+                                    PermissionToggleRow(
+                                        label = allowCreateText,
+                                        checked = userRole?.allowCreateTasks == true,
+                                        enabled = canEditPermissions,
+                                        onCheckedChange = { viewModel.updateRolePermissions(user.roleId, allowDelete = userRole?.allowDeleteTasks == true, allowCreate = it, allowSeeOthers = userRole?.allowSeeOtherTasks == true) }
+                                    )
+                                    PermissionToggleRow(
+                                        label = allowDeleteText,
+                                        checked = userRole?.allowDeleteTasks == true,
+                                        enabled = canEditPermissions,
+                                        onCheckedChange = { viewModel.updateRolePermissions(user.roleId, allowDelete = it, allowCreate = userRole?.allowCreateTasks == true, allowSeeOthers = userRole?.allowSeeOtherTasks == true) }
+                                    )
+                                    PermissionToggleRow(
+                                        label = allowSeeOthersText,
+                                        checked = userRole?.allowSeeOtherTasks == true,
+                                        enabled = canEditPermissions,
+                                        onCheckedChange = { viewModel.updateRolePermissions(user.roleId, allowDelete = userRole?.allowDeleteTasks == true, allowCreate = userRole?.allowCreateTasks == true, allowSeeOthers = it) }
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    item {
+                        val resetTitle = if (currentLang == "HE") "אזור מחיקה (אזור מפתח)" else "Danger Zone (Developer Area)"
+                        val resetDesc = if (currentLang == "HE") "ניקוי ואיפוס מוחלט של כל המידע המקומי, כל המשפחות, הארנקים ורשימות הקניות, וחזרה למצב נקי." else "Clean and completely reset all local database records, families, balances, and shopping lists to start fresh."
+                        val resetButtonText = if (currentLang == "HE") "איפוס מלא של האפליקציה" else "Full App Reset"
+                        
+                        Card(
+                            modifier = Modifier.fillMaxWidth().testTag("developer_reset_card"),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.15f)),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.4f))
+                        ) {
+                            Column(Modifier.padding(16.dp)) {
+                                Text(resetTitle, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
+                                Spacer(Modifier.height(4.dp))
+                                Text(resetDesc, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Spacer(Modifier.height(16.dp))
+                                Button(
+                                    onClick = {
+                                        if (currentUserIsAdmin) {
+                                            resetFamilyNameInput = ""
+                                            resetManagerNameInput = if (currentLang == "HE") "אבא" else "Dad"
+                                            showResetPromptDialog = true
+                                        } else {
+                                            android.widget.Toast.makeText(
+                                                context,
+                                                if (currentLang == "HE") "שגיאה: רק מנהל משפחה או מבוגר רשאי לאפס את האפליקציה!" else "Error: Only a Family Manager or Adult is allowed to reset the app!",
+                                                android.widget.Toast.LENGTH_LONG
+                                            ).show()
+                                        }
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                                    modifier = Modifier.fillMaxWidth().testTag("confirm_reset_button")
+                                ) {
+                                    Icon(Icons.Default.Delete, contentDescription = null)
+                                    Spacer(Modifier.width(8.dp))
+                                    Text(resetButtonText)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (showAddMemberDialog) {
+        AddMemberDialog(
+            languageCode = currentLang,
+            onDismiss = { showAddMemberDialog = false },
+            onAdd = { name, role ->
+                viewModel.inviteMember(name, role)
+                showAddMemberDialog = false
+            }
+        )
+    }
+
+    if (showResetPromptDialog) {
+        AlertDialog(
+            onDismissRequest = { showResetPromptDialog = false },
+            title = {
+                Text(
+                    text = if (currentLang == "HE") "איפוס מלא של האפליקציה" else "Full App Reset",
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.error
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(
+                        text = if (currentLang == "HE") 
+                            "פעולה זו תמחק לחלוטין את כל המידע המקומי. אנא הזן את שם המשפחה וההורה המנהל החדשים ליצירת המרחב המשפחתי החדש:" 
+                            else "This action will permanently erase all local records. Please enter the new family name and manager name to seed the fresh family space:",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    OutlinedTextField(
+                        value = resetFamilyNameInput,
+                        onValueChange = { resetFamilyNameInput = it },
+                        label = { Text(if (currentLang == "HE") "שם משפחה (למשל: כהן)" else "Family Name (e.g. Smiths)") },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        singleLine = true
+                    )
+                    OutlinedTextField(
+                        value = resetManagerNameInput,
+                        onValueChange = { resetManagerNameInput = it },
+                        label = { Text(if (currentLang == "HE") "שם מנהל/הורה (למשל: אבא)" else "Manager Name (e.g. Dad)") },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        singleLine = true
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (resetFamilyNameInput.isNotBlank() && resetManagerNameInput.isNotBlank()) {
+                            viewModel.resetAllLocalData(resetFamilyNameInput, resetManagerNameInput) {
+                                showResetPromptDialog = false
+                            }
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                    enabled = resetFamilyNameInput.isNotBlank() && resetManagerNameInput.isNotBlank(),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Text(if (currentLang == "HE") "אשר ואפס הכל" else "Confirm & Reset All")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showResetPromptDialog = false }) {
+                    Text(if (currentLang == "HE") "ביטול" else "Cancel")
+                }
+            },
+            shape = RoundedCornerShape(24.dp)
+        )
+    }
+}
+
+@Composable
+fun PermissionToggleRow(label: String, checked: Boolean, enabled: Boolean = true, onCheckedChange: (Boolean) -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(label, style = MaterialTheme.typography.bodyMedium, color = if (enabled) Color.Unspecified else Color.Gray)
+        Spacer(Modifier.width(16.dp))
+        Switch(checked = checked, onCheckedChange = onCheckedChange, enabled = enabled)
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun AddMemberDialog(
+    languageCode: String,
+    onDismiss: () -> Unit,
+    onAdd: (String, UserRole) -> Unit
+) {
+    var name by remember { mutableStateOf("") }
+    var role by remember { mutableStateOf(UserRole.CHILD) }
+
+    val inviteTitleText = if (languageCode == "HE") "הזמן בן משפחה" else "Invite Family Member"
+    val nameLabelText = if (languageCode == "HE") "שם" else "Name"
+    val roleLabelText = if (languageCode == "HE") "תפקיד" else "Role"
+    val kidLabelText = if (languageCode == "HE") "ילד / ילדה" else "Kid / Child"
+    val adultLabelText = if (languageCode == "HE") "מבוגר / הורה" else "Adult / Manager"
+    val inviteText = if (languageCode == "HE") "הזמן" else "Invite"
+    val cancelText = if (languageCode == "HE") "ביטול" else "Cancel"
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(inviteTitleText) },
+        text = {
+            Column {
+                TextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text(nameLabelText) },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(16.dp))
+                
+                Text(roleLabelText, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium)
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(
+                        selected = role == UserRole.CHILD,
+                        onClick = { 
+                            role = UserRole.CHILD
+                        },
+                        label = { Text(kidLabelText) }
+                    )
+                    FilterChip(
+                        selected = role == UserRole.ADULT,
+                        onClick = { 
+                            role = UserRole.ADULT
+                        },
+                        label = { Text(adultLabelText) }
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { if (name.isNotBlank()) onAdd(name, role) },
+                enabled = name.isNotBlank()
+            ) {
+                Text(inviteText)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text(cancelText) }
+        }
+    )
+}
+
+@Composable
+fun PriorityHeader(priority: Priority, languageCode: String) {
+    val color = when (priority) {
+        Priority.URGENT -> PriorityUrgent
+        Priority.HIGH -> PriorityHigh
+        Priority.MEDIUM -> PriorityMedium
+        Priority.LOW -> PriorityLow
+    }
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 8.dp)) {
+        Box(Modifier.size(12.dp).background(color, CircleShape))
+        Spacer(Modifier.width(8.dp))
+        Text(Localization.getPriorityTranslation(priority.name, languageCode), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.ExtraBold, color = color)
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
+@Composable
+fun StoreScreen(viewModel: TaskViewModel, onBack: () -> Unit) {
+    val items by viewModel.rewardItems.collectAsStateWithLifecycle()
+    val currentUser by viewModel.currentUser.collectAsStateWithLifecycle()
+    val currentUserRole by viewModel.currentUserRole.collectAsStateWithLifecycle()
+    val currentLang by viewModel.language.collectAsStateWithLifecycle()
+
+    var showAddDialog by remember { mutableStateOf(false) }
+    var editingItem by remember { mutableStateOf<RewardItem?>(null) }
+    var deletingItem by remember { mutableStateOf<RewardItem?>(null) }
+
+    val canManageStore = currentUserRole?.isManager == true || currentUser?.role == UserRole.ADULT
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text(Localization.get("virtual_store", currentLang), fontWeight = FontWeight.Bold) },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                    }
+                },
+                actions = {
+                    if (currentUser != null) {
+                        Surface(color = Accent, shape = CircleShape) {
+                            val pointsLabel = if (currentLang == "HE") "נקודות" else "Points"
+                            Text("${currentUser?.balance} $pointsLabel", Modifier.padding(horizontal = 12.dp, vertical = 4.dp), fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
+                }
+            )
+        },
+        floatingActionButton = {
+            if (canManageStore) {
+                FloatingActionButton(
+                    onClick = { showAddDialog = true },
+                    containerColor = MaterialTheme.colorScheme.primary
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Add,
+                        contentDescription = if (currentLang == "HE") "הוסף מוצר" else "Add Product"
+                    )
+                }
+            }
+        }
+    ) { padding ->
+        Column(Modifier.fillMaxSize().padding(padding).padding(16.dp)) {
+            val storeDesc = if (currentLang == "HE") "ממשו את הנקודות שצברתם עבור הטבות נפלאות!" else "Redeem your earnings for awesome rewards!"
+            Text(storeDesc, style = MaterialTheme.typography.bodyMedium, color = Color.Gray)
+            
+            Spacer(Modifier.height(16.dp))
+            
+            LazyVerticalGrid(columns = GridCells.Fixed(2), horizontalArrangement = Arrangement.spacedBy(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                items(items) { item ->
+                    StoreItemCard(
+                        item = item,
+                        languageCode = currentLang,
+                        canAfford = (currentUser?.balance ?: 0) >= item.price,
+                        canManageStore = canManageStore,
+                        onEdit = { editingItem = item },
+                        onDelete = { deletingItem = item },
+                        onPurchase = {
+                            currentUser?.let { user -> viewModel.purchaseReward(user.id, item, currentLang) }
+                        }
+                    )
+                }
+            }
+        }
+    }
+
+    if (showAddDialog) {
+        AddEditRewardItemDialog(
+            item = null,
+            languageCode = currentLang,
+            onDismiss = { showAddDialog = false },
+            onConfirm = { title, price, imgUrl ->
+                viewModel.addRewardItem(RewardItem(title = title, price = price, imageUrl = imgUrl))
+                showAddDialog = false
+            }
+        )
+    }
+
+    editingItem?.let { item ->
+        AddEditRewardItemDialog(
+            item = item,
+            languageCode = currentLang,
+            onDismiss = { editingItem = null },
+            onConfirm = { title, price, imgUrl ->
+                viewModel.updateRewardItem(item.copy(title = title, price = price, imageUrl = imgUrl))
+                editingItem = null
+            }
+        )
+    }
+
+    deletingItem?.let { item ->
+        ConfirmDeleteRewardDialog(
+            item = item,
+            languageCode = currentLang,
+            onDismiss = { deletingItem = null },
+            onConfirm = {
+                viewModel.deleteRewardItem(item)
+                deletingItem = null
+            }
+        )
+    }
+}
+
+@Composable
+fun ConfirmDeleteRewardDialog(
+    item: RewardItem,
+    languageCode: String,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit
+) {
+    val title = if (languageCode == "HE") "מחיקת מוצר" else "Delete Product"
+    val text = if (languageCode == "HE") "האם אתה בטוח שברצונך למחוק את '${item.title}' מהחנות?" else "Are you sure you want to delete '${item.title}' from the store?"
+    val confirmText = if (languageCode == "HE") "מחק" else "Delete"
+    val cancelText = if (languageCode == "HE") "ביטול" else "Cancel"
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title, fontWeight = FontWeight.Bold) },
+        text = { Text(text) },
+        confirmButton = {
+            Button(
+                onClick = onConfirm,
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+            ) {
+                Text(confirmText)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(cancelText)
+            }
+        }
+    )
+}
+
+data class RewardImageOption(
+    val titleHe: String,
+    val titleEn: String,
+    val url: String
+)
+
+val rewardImageOptions = listOf(
+    RewardImageOption("זמן מסך", "Screen Time", "https://images.unsplash.com/photo-1542751371-adc38448a05e?q=80&w=300&auto=format&fit=crop"),
+    RewardImageOption("ממתקים", "Sweets", "https://images.unsplash.com/photo-1501443715934-6271f24f5cf9?q=80&w=300&auto=format&fit=crop"),
+    RewardImageOption("צעצוע", "Toy", "https://images.unsplash.com/photo-1515488042361-404e9250afef?q=80&w=300&auto=format&fit=crop"),
+    RewardImageOption("טיול / בילוי", "Outing", "https://images.unsplash.com/photo-1501555088652-021faa106b9b?q=80&w=300&auto=format&fit=crop"),
+    RewardImageOption("סרט קולנוע", "Movie", "https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?q=80&w=300&auto=format&fit=crop"),
+    RewardImageOption("ספר קריאה", "Book", "https://images.unsplash.com/photo-1512820790803-83ca734da794?q=80&w=300&auto=format&fit=crop"),
+    RewardImageOption("פיצה / מזון", "Pizza / Food", "https://images.unsplash.com/photo-1513104890138-7c749659a591?q=80&w=300&auto=format&fit=crop"),
+    RewardImageOption("מתנה / כסף", "Gift", "https://images.unsplash.com/photo-1549465220-1a8b9238cd48?q=80&w=300&auto=format&fit=crop")
+)
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun AddEditRewardItemDialog(
+    item: RewardItem? = null,
+    languageCode: String,
+    onDismiss: () -> Unit,
+    onConfirm: (String, Int, String?) -> Unit
+) {
+    var title by remember { mutableStateOf(item?.title ?: "") }
+    var priceStr by remember { mutableStateOf(item?.price?.toString() ?: "50") }
+    var imageUrl by remember { mutableStateOf(item?.imageUrl ?: "") }
+    val isEdit = item != null
+
+    val dialogTitle = if (languageCode == "HE") {
+        if (isEdit) "עריכת מוצר בחנות" else "הוספת מוצר חדש לחנות"
+    } else {
+        if (isEdit) "Edit Reward Product" else "Add New Reward Product"
+    }
+
+    val labelTitle = if (languageCode == "HE") "שם המוצר/הטבה" else "Product/Reward Name"
+    val labelPrice = if (languageCode == "HE") "מחיר בנקודות" else "Price in Points"
+    val labelGallery = if (languageCode == "HE") "בחר תמונה מוכנה מהגלריה:" else "Choose a preset image:"
+    val labelCustomImage = if (languageCode == "HE") "כתובת תמונה מותאמת אישית (URL):" else "Custom Image URL:"
+    val labelPreview = if (languageCode == "HE") "תצוגה מקדימה של התמונה:" else "Image Preview:"
+    val confirmBtnText = if (languageCode == "HE") "אישור" else "Confirm"
+    val cancelBtnText = if (languageCode == "HE") "ביטול" else "Cancel"
+
+    val scrollState = rememberScrollState()
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(dialogTitle, fontWeight = FontWeight.Bold) },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(scrollState),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                OutlinedTextField(
+                    value = title,
+                    onValueChange = { title = it },
+                    label = { Text(labelTitle) },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                
+                OutlinedTextField(
+                    value = priceStr,
+                    onValueChange = { priceStr = it },
+                    label = { Text(labelPrice) },
+                    modifier = Modifier.fillMaxWidth(),
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                        keyboardType = androidx.compose.ui.text.input.KeyboardType.Number
+                    )
+                )
+
+                Text(labelGallery, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Medium)
+                
+                LazyRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    contentPadding = PaddingValues(vertical = 4.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    items(rewardImageOptions) { option ->
+                        val isSelected = imageUrl == option.url
+                        val optionName = if (languageCode == "HE") option.titleHe else option.titleEn
+                        Card(
+                            modifier = Modifier
+                                .width(90.dp)
+                                .clickable { imageUrl = option.url },
+                            border = if (isSelected) BorderStroke(3.dp, MaterialTheme.colorScheme.primary) else null,
+                            colors = CardDefaults.cardColors(
+                                containerColor = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant
+                            )
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(4.dp)) {
+                                AsyncImage(
+                                    model = option.url,
+                                    contentDescription = optionName,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(55.dp)
+                                        .clip(RoundedCornerShape(4.dp)),
+                                    contentScale = ContentScale.Crop
+                                )
+                                Text(
+                                    text = optionName,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    maxLines = 1,
+                                    modifier = Modifier.padding(top = 4.dp),
+                                    textAlign = TextAlign.Center
+                                )
+                            }
+                        }
+                    }
+                }
+
+                OutlinedTextField(
+                    value = imageUrl,
+                    onValueChange = { imageUrl = it },
+                    label = { Text(labelCustomImage) },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+
+                if (imageUrl.isNotBlank()) {
+                    Text(labelPreview, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Medium)
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(100.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                    ) {
+                        AsyncImage(
+                            model = imageUrl,
+                            contentDescription = "Preview",
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = ContentScale.Crop
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    val price = priceStr.toIntOrNull() ?: 0
+                    if (title.isNotBlank() && price > 0) {
+                        onConfirm(title, price, imageUrl.ifBlank { null })
+                    }
+                }
+            ) {
+                Text(confirmBtnText)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(cancelBtnText)
+            }
+        }
+    )
+}
+
+@Composable
+fun StoreItemCard(
+    item: RewardItem,
+    languageCode: String,
+    canAfford: Boolean,
+    canManageStore: Boolean = false,
+    onEdit: () -> Unit = {},
+    onDelete: () -> Unit = {},
+    onPurchase: () -> Unit
+) {
+    Card(Modifier.fillMaxWidth()) {
+        Column {
+            Box(Modifier.fillMaxWidth().height(120.dp).background(MaterialTheme.colorScheme.surfaceVariant)) {
+                if (!item.imageUrl.isNullOrBlank()) {
+                    AsyncImage(
+                        model = item.imageUrl,
+                        contentDescription = item.title,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
+                    )
+                } else {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Icon(Icons.Default.Star, contentDescription = null, Modifier.size(48.dp), tint = Accent)
+                    }
+                }
+                if (canManageStore) {
+                    Row(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        IconButton(
+                            onClick = onEdit,
+                            modifier = Modifier.size(32.dp).background(Color.White.copy(alpha = 0.8f), CircleShape)
+                        ) {
+                            Icon(Icons.Default.Edit, contentDescription = "Edit product", modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary)
+                        }
+                        IconButton(
+                            onClick = onDelete,
+                            modifier = Modifier.size(32.dp).background(Color.White.copy(alpha = 0.8f), CircleShape)
+                        ) {
+                            Icon(Icons.Default.Delete, contentDescription = "Delete product", modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.error)
+                        }
+                    }
+                }
+            }
+            Column(Modifier.padding(12.dp)) {
+                Text(item.title, fontWeight = FontWeight.Bold, maxLines = 1)
+                Text("${item.price} ${Localization.get("pts", languageCode)}", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.ExtraBold)
+                Spacer(Modifier.height(8.dp))
+                Button(onClick = onPurchase, enabled = canAfford, modifier = Modifier.fillMaxWidth()) {
+                    Text(Localization.get("redeem", languageCode))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun UserChip(user: User, isSelected: Boolean, languageCode: String = "EN", onClick: () -> Unit) {
+    Surface(
+        modifier = Modifier.clickable { onClick() },
+        color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.primaryContainer,
+        shape = RoundedCornerShape(16.dp),
+        tonalElevation = if (isSelected) 8.dp else 0.dp,
+        border = if (isSelected) BorderStroke(2.dp, MaterialTheme.colorScheme.outline) else null
+    ) {
+        Column(Modifier.padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            Box(Modifier.size(40.dp).background(if (isSelected) Color.White else MaterialTheme.colorScheme.primary, CircleShape), contentAlignment = Alignment.Center) {
+                Text(user.name.take(1), color = if (isSelected) MaterialTheme.colorScheme.primary else Color.White, fontWeight = FontWeight.Bold)
+            }
+            Text(user.name, fontWeight = FontWeight.Bold, color = if (isSelected) Color.White else Color.Unspecified)
+            Text("${user.balance} ${Localization.get("pts", languageCode)}", style = MaterialTheme.typography.labelSmall, color = if (isSelected) Color.White.copy(alpha = 0.8f) else Color.Unspecified)
+        }
+    }
+}
+
+@Composable
+fun AddTaskDialog(languageCode: String, onDismiss: () -> Unit, onAdd: (String, Priority, TaskSource) -> Unit) {
+    var title by remember { mutableStateOf("") }
+    var priority by remember { mutableStateOf(Priority.MEDIUM) }
+    
+    val dialogTitle = Localization.get("new_task", languageCode)
+    val titleLabel = Localization.get("task_title", languageCode)
+    val priorityLabel = Localization.get("priority", languageCode)
+    val addLabel = Localization.get("add", languageCode)
+    val cancelLabel = Localization.get("cancel", languageCode)
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(dialogTitle) },
+        text = {
+            Column {
+                TextField(value = title, onValueChange = { title = it }, label = { Text(titleLabel) }, modifier = Modifier.fillMaxWidth())
+                Spacer(Modifier.height(8.dp))
+                Text(priorityLabel)
+                Row {
+                    Priority.values().forEach { p ->
+                        val selected = priority == p
+                        FilterChip(
+                            selected = selected,
+                            onClick = { priority = p },
+                            label = { Text(Localization.getPriorityTranslation(p.name, languageCode)) },
+                            modifier = Modifier.padding(end = 4.dp)
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = { if (title.isNotBlank()) onAdd(title, priority, TaskSource.MANUAL) }) {
+                Text(addLabel)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text(cancelLabel) }
+        }
+    )
+}
+
+@Composable
+fun AddChoreDialog(languageCode: String, familyMembers: List<User>, onDismiss: () -> Unit, onAdd: (String, Int, Int) -> Unit) {
+    var title by remember { mutableStateOf("") }
+    var points by remember { mutableStateOf("10") }
+    var selectedKidId by remember(familyMembers) { mutableStateOf(familyMembers.firstOrNull()?.id ?: 0) }
+
+    val dialogTitle = Localization.get("new_family_chore", languageCode)
+    val choreTitleLabel = Localization.get("chore_title", languageCode)
+    val rewardPointsLabel = Localization.get("reward_points", languageCode)
+    val assignToLabel = Localization.get("assign_to", languageCode)
+    val createLabel = Localization.get("create", languageCode)
+    val cancelLabel = Localization.get("cancel", languageCode)
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(dialogTitle) },
+        text = {
+            Column {
+                TextField(value = title, onValueChange = { title = it }, label = { Text(choreTitleLabel) }, modifier = Modifier.fillMaxWidth())
+                Spacer(Modifier.height(8.dp))
+                TextField(value = points, onValueChange = { if (it.all { char -> char.isDigit() }) points = it }, label = { Text(rewardPointsLabel) }, modifier = Modifier.fillMaxWidth())
+                Spacer(Modifier.height(8.dp))
+                Text(assignToLabel)
+                LazyRow(modifier = Modifier.padding(vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    items(familyMembers) { member ->
+                        FilterChip(
+                            selected = selectedKidId == member.id,
+                            onClick = { selectedKidId = member.id },
+                            label = { Text(member.name) }
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = { if (title.isNotBlank()) onAdd(title, points.toIntOrNull() ?: 0, selectedKidId) }) {
+                Text(createLabel)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text(cancelLabel) }
+        }
+    )
+}

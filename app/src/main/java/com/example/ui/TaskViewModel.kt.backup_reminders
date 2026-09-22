@@ -1,0 +1,671 @@
+package com.example.ui
+
+import android.content.Context
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.viewModelScope
+import com.example.data.*
+import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.launch
+import java.util.Locale
+
+@OptIn(ExperimentalCoroutinesApi::class)
+class TaskViewModel(
+    private val repository: TaskRepository,
+    private val context: Context
+) : ViewModel() {
+
+    private val prefs = context.getSharedPreferences("family_prefs", Context.MODE_PRIVATE)
+
+    // Detect system language (HE/iw or EN) for first time defaults
+    private val defaultLanguageCode: String by lazy {
+        val sysLang = Locale.getDefault().language.lowercase()
+        if (sysLang.contains("he") || sysLang.contains("iw")) "HE" else "EN"
+    }
+
+    private val _language = MutableStateFlow<String>(
+        prefs.getString("app_language", defaultLanguageCode) ?: defaultLanguageCode
+    )
+    val language = _language.asStateFlow()
+
+    private val _familyId = MutableStateFlow<String>(
+        prefs.getString("active_family_id", "family_default") ?: "family_default"
+    )
+    val familyId = _familyId.asStateFlow()
+
+    private val _dailyReminderEnabled = MutableStateFlow<Boolean>(
+        prefs.getBoolean("daily_reminder_enabled", false)
+    )
+    val dailyReminderEnabled = _dailyReminderEnabled.asStateFlow()
+
+    fun setDailyReminderEnabled(enabled: Boolean, context: Context) {
+        viewModelScope.launch {
+            _dailyReminderEnabled.value = enabled
+            prefs.edit().putBoolean("daily_reminder_enabled", enabled).apply()
+            if (enabled) {
+                com.example.ReminderReceiver.scheduleDailyReminder(context)
+            } else {
+                com.example.ReminderReceiver.cancelDailyReminder(context)
+            }
+        }
+    }
+
+    init {
+        // Automatically sync firestore whenever familyId updates
+        viewModelScope.launch {
+            familyId.collect { fId ->
+                repository.updateSyncFamilyId(fId)
+            }
+        }
+    }
+
+    // Reactive streams filtered by familyId
+    val allTasks = familyId.flatMapLatest { fId ->
+        repository.getAllMainTasks(fId)
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = emptyList()
+    )
+
+    val allChores = familyId.flatMapLatest { fId ->
+        repository.getAllChores(fId)
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = emptyList()
+    )
+
+    val allUsers = familyId.flatMapLatest { fId ->
+        repository.getAllUsers(fId)
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = emptyList()
+    )
+
+    val rewardItems = familyId.flatMapLatest { fId ->
+        repository.getRewardItems(fId)
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = emptyList()
+    )
+
+    val allCategories = familyId.flatMapLatest { fId ->
+        repository.getAllCategories(fId)
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = emptyList()
+    )
+
+    val allShoppingItems = familyId.flatMapLatest { fId ->
+        repository.getAllShoppingItems(fId)
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = emptyList()
+    )
+
+    val allFamilyRoles = familyId.flatMapLatest { fId ->
+        repository.getFamilyRolesByFamily(fId)
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = emptyList()
+    )
+
+    fun addCategory(name: String) {
+        viewModelScope.launch {
+            repository.insertCategory(ShoppingCategory(name = name, familyId = familyId.value))
+        }
+    }
+
+    fun addShoppingItem(name: String, categoryId: Int? = null) {
+        viewModelScope.launch {
+            repository.insertShoppingItem(ShoppingItem(name = name, categoryId = categoryId, familyId = familyId.value))
+        }
+    }
+
+    fun updateCategory(category: ShoppingCategory) {
+        viewModelScope.launch {
+            repository.updateCategory(category.copy(familyId = familyId.value))
+        }
+    }
+
+    fun deleteCategory(category: ShoppingCategory) {
+        viewModelScope.launch {
+            repository.deleteCategory(category)
+        }
+    }
+
+    fun updateShoppingItem(item: ShoppingItem) {
+        viewModelScope.launch {
+            repository.updateShoppingItem(item.copy(familyId = familyId.value))
+        }
+    }
+
+    fun deleteShoppingItem(item: ShoppingItem) {
+        viewModelScope.launch {
+            repository.deleteShoppingItem(item)
+        }
+    }
+
+    fun setCategoryExpanded(category: ShoppingCategory, expanded: Boolean) {
+        viewModelScope.launch {
+            repository.updateCategory(category.copy(isExpanded = expanded, familyId = familyId.value))
+        }
+    }
+
+    fun toggleCategoryCompletion(category: ShoppingCategory, categoryItems: List<ShoppingItem>) {
+        viewModelScope.launch {
+            val targetCompleted = !category.isCompleted
+            repository.updateCategory(category.copy(isCompleted = targetCompleted, familyId = familyId.value))
+            categoryItems.forEach { item ->
+                if (item.isCompleted != targetCompleted) {
+                    repository.updateShoppingItem(item.copy(isCompleted = targetCompleted, familyId = familyId.value))
+                }
+            }
+        }
+    }
+
+    fun toggleItemCompletion(item: ShoppingItem, anySiblings: List<ShoppingItem>, parentCategory: ShoppingCategory?) {
+        viewModelScope.launch {
+            val targetCompleted = !item.isCompleted
+            repository.updateShoppingItem(item.copy(isCompleted = targetCompleted, familyId = familyId.value))
+
+            if (parentCategory != null) {
+                if (targetCompleted) {
+                    val allSiblingsNowCompleted = anySiblings.filter { it.id != item.id }.all { it.isCompleted }
+                    if (allSiblingsNowCompleted && !parentCategory.isCompleted) {
+                        repository.updateCategory(parentCategory.copy(isCompleted = true, familyId = familyId.value))
+                    }
+                } else {
+                    if (parentCategory.isCompleted) {
+                        repository.updateCategory(parentCategory.copy(isCompleted = false, familyId = familyId.value))
+                    }
+                }
+            }
+        }
+    }
+
+    fun moveShoppingItem(itemId: Int, targetCategoryId: Int?, targetPosition: Int) {
+        viewModelScope.launch {
+            val items = allShoppingItems.value
+            val item = items.find { it.id == itemId } ?: return@launch
+            
+            val updatedItem = item.copy(categoryId = targetCategoryId, position = targetPosition, familyId = familyId.value)
+            repository.updateShoppingItem(updatedItem)
+            
+            val siblingItems = allShoppingItems.value
+                .filter { it.categoryId == targetCategoryId && it.id != itemId }
+                .sortedBy { it.position }
+            
+            var currentPos = 0
+            siblingItems.forEach { sibling ->
+                if (currentPos == targetPosition) {
+                    currentPos++
+                }
+                if (sibling.position != currentPos) {
+                    repository.updateShoppingItem(sibling.copy(position = currentPos, familyId = familyId.value))
+                }
+                currentPos++
+            }
+        }
+    }
+
+    private val _selectedUserId = MutableStateFlow<Int?>(
+        if (prefs.contains("logged_in_user_id")) prefs.getInt("logged_in_user_id", -1).takeIf { it != -1 } else null
+    )
+    val selectedUserId = _selectedUserId.asStateFlow()
+
+    val currentUser = selectedUserId.flatMapLatest { id ->
+        if (id == null) flowOf(null)
+        else allUsers.map { users -> users.find { it.id == id } }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
+    // Automatically resolve active permissions from the profile's linked FamilyRole
+    val currentUserRole = combine(currentUser, allFamilyRoles) { user, roles ->
+        if (user == null || roles.isEmpty()) null
+        else roles.find { it.id == user.roleId }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
+    fun selectUser(userId: Int?) {
+        _selectedUserId.value = userId
+        if (userId != null) {
+            prefs.edit().putInt("logged_in_user_id", userId).apply()
+        } else {
+            prefs.edit().remove("logged_in_user_id").apply()
+        }
+    }
+
+    fun setLanguage(langCode: String) {
+        _language.value = langCode
+        prefs.edit().putString("app_language", langCode).apply()
+    }
+
+    fun toggleLanguage() {
+        val nextLang = if (_language.value == "HE") "EN" else "HE"
+        setLanguage(nextLang)
+    }
+
+    fun addTask(
+        title: String,
+        description: String = "",
+        priority: Priority = Priority.MEDIUM,
+        dueDate: Long? = null,
+        isChore: Boolean = false,
+        assignedToUserId: Int? = null,
+        rewardPoints: Int = 0,
+        source: TaskSource = TaskSource.MANUAL
+    ) {
+        viewModelScope.launch {
+            repository.insertTask(
+                Task(
+                    title = title,
+                    description = description,
+                    priority = priority,
+                    dueDate = dueDate,
+                    isChore = isChore,
+                    assignedToUserId = assignedToUserId,
+                    rewardPoints = rewardPoints,
+                    source = source,
+                    familyId = familyId.value
+                )
+            )
+        }
+    }
+
+    fun completeTask(task: Task) {
+        viewModelScope.launch {
+            repository.completeTask(task)
+        }
+    }
+
+    fun uncompleteTask(task: Task) {
+        viewModelScope.launch {
+            repository.uncompleteTask(task)
+        }
+    }
+
+    fun approveChore(task: Task, approved: Boolean) {
+        viewModelScope.launch {
+            repository.approveChore(task, approved)
+        }
+    }
+
+    fun unapproveChore(task: Task) {
+        viewModelScope.launch {
+            repository.unapproveChore(task)
+        }
+    }
+
+    fun purchaseReward(userId: Int, item: RewardItem, languageCode: String) {
+        viewModelScope.launch {
+            repository.purchaseReward(userId, item, languageCode)
+        }
+    }
+
+    fun addRewardItem(item: RewardItem) {
+        viewModelScope.launch {
+            repository.insertRewardItem(item.copy(familyId = familyId.value))
+        }
+    }
+
+    fun updateRewardItem(item: RewardItem) {
+        viewModelScope.launch {
+            repository.updateRewardItem(item.copy(familyId = familyId.value))
+        }
+    }
+
+    fun deleteRewardItem(item: RewardItem) {
+        viewModelScope.launch {
+            repository.deleteRewardItem(item)
+        }
+    }
+
+    fun deleteTask(task: Task) {
+        viewModelScope.launch {
+            repository.deleteTask(task)
+        }
+    }
+
+    fun deleteUser(user: User) {
+        viewModelScope.launch {
+            repository.deleteUser(user)
+            if (_selectedUserId.value == user.id) {
+                selectUser(null)
+            }
+        }
+    }
+
+    fun createFamily(familyName: String, managerName: String) {
+        viewModelScope.launch {
+            // Generate robust randomized unique family ID
+            val generatedFamilyId = "family_" + (100000..999999).random().toString()
+            _familyId.value = generatedFamilyId
+            prefs.edit().putString("active_family_id", generatedFamilyId).apply()
+            
+            // Seed default values localized to current display language!
+            seedFamilyData(generatedFamilyId, familyName, managerName, _language.value == "HE")
+            
+            prefs.edit().putBoolean("db_seeded", true).apply()
+        }
+    }
+
+    fun joinFamily(fId: String) {
+        viewModelScope.launch {
+            _familyId.value = fId
+            prefs.edit().putString("active_family_id", fId).apply()
+            prefs.edit().putBoolean("db_seeded", true).apply()
+            selectUser(null) // Let them pick an existing profile
+        }
+    }
+
+    fun joinAndSelectProfile(fId: String, uId: Int) {
+        viewModelScope.launch {
+            _familyId.value = fId
+            prefs.edit().putString("active_family_id", fId).apply()
+            prefs.edit().putBoolean("db_seeded", true).apply()
+            selectUser(uId) // Log in directly into this profile
+        }
+    }
+
+    fun inviteMember(
+        name: String,
+        role: UserRole
+    ) {
+        val currentFamily = currentUser.value?.familyName ?: "Our Family"
+        val currentFamilyId = familyId.value
+        val targetRoleId = "${currentFamilyId}_${role.name}"
+
+        viewModelScope.launch {
+            val newMember = User(
+                name = name,
+                role = role,
+                familyName = currentFamily,
+                familyId = currentFamilyId,
+                roleId = targetRoleId,
+                balance = 0
+            )
+            repository.insertUser(newMember)
+        }
+    }
+
+    fun updateRolePermissions(
+        roleId: String,
+        allowDelete: Boolean,
+        allowCreate: Boolean,
+        allowSeeOthers: Boolean
+    ) {
+        viewModelScope.launch {
+            val role = allFamilyRoles.value.find { it.id == roleId }
+            if (role != null) {
+                repository.insertFamilyRole(
+                    role.copy(
+                        allowDeleteTasks = allowDelete,
+                        allowCreateTasks = allowCreate,
+                        allowSeeOtherTasks = allowSeeOthers
+                    )
+                )
+            }
+        }
+    }
+
+    fun updateMemberRole(userId: Int, roleType: UserRole) {
+        viewModelScope.launch {
+            val user = repository.getUserById(userId)
+            if (user != null) {
+                val targetRoleId = "${user.familyId}_${roleType.name}"
+                repository.updateUser(user.copy(role = roleType, roleId = targetRoleId))
+            }
+        }
+    }
+
+    fun updateMemberPasscode(userId: Int, passcode: String?) {
+        viewModelScope.launch {
+            val user = repository.getUserById(userId)
+            if (user != null) {
+                repository.updateUser(user.copy(passcode = passcode))
+            }
+        }
+    }
+
+    // Seeding logic that creates the full isolated sandbox per family, fully translated
+    private suspend fun seedFamilyData(
+        fId: String,
+        familyName: String,
+        managerName: String,
+        isHebrew: Boolean
+    ) {
+        // 1. Roles & Group Permissions
+        val managerRole = FamilyRole(
+            id = "${fId}_MANAGER",
+            familyId = fId,
+            roleType = UserRole.ADULT,
+            isManager = true,
+            allowDeleteTasks = true,
+            allowCreateTasks = true,
+            allowSeeOtherTasks = true
+        )
+        val adultRole = FamilyRole(
+            id = "${fId}_ADULT",
+            familyId = fId,
+            roleType = UserRole.ADULT,
+            isManager = false,
+            allowDeleteTasks = true,
+            allowCreateTasks = true,
+            allowSeeOtherTasks = true
+        )
+        val childRole = FamilyRole(
+            id = "${fId}_CHILD",
+            familyId = fId,
+            roleType = UserRole.CHILD,
+            isManager = false,
+            allowDeleteTasks = false,
+            allowCreateTasks = false,
+            allowSeeOtherTasks = false
+        )
+
+        repository.insertFamilyRole(managerRole)
+        repository.insertFamilyRole(adultRole)
+        repository.insertFamilyRole(childRole)
+
+        // 2. Family Members
+        val topLeader = User(
+            name = managerName,
+            role = UserRole.ADULT,
+            familyName = familyName,
+            familyId = fId,
+            roleId = managerRole.id,
+            balance = 100
+        )
+        val managerProfileId = repository.insertUser(topLeader).toInt()
+
+        val secondAdultName = if (isHebrew) "אמא" else "Mom"
+        val firstChildName = if (isHebrew) "לאו" else "Leo"
+        val secondChildName = if (isHebrew) "מיה" else "Mia"
+
+        repository.insertUser(
+            User(
+                name = secondAdultName,
+                role = UserRole.ADULT,
+                familyName = familyName,
+                familyId = fId,
+                roleId = adultRole.id,
+                balance = 100
+            )
+        )
+
+        val kid1Id = repository.insertUser(
+            User(
+                name = firstChildName,
+                role = UserRole.CHILD,
+                familyName = familyName,
+                familyId = fId,
+                roleId = childRole.id,
+                balance = 0
+            )
+        ).toInt()
+
+        repository.insertUser(
+            User(
+                name = secondChildName,
+                role = UserRole.CHILD,
+                familyName = familyName,
+                familyId = fId,
+                roleId = childRole.id,
+                balance = 0
+            )
+        )
+
+        // 3. Rewards Seeding
+        val reward1 = if (isHebrew) "זמן מסך נוסף (30 דק')" else "Extra Screen Time (30 min)"
+        val reward2 = if (isHebrew) "מכונית צעצוע חדשה" else "New Toy Car"
+        val reward3 = if (isHebrew) "טיול סופשבוע לפארק" else "Weekend Trip to Park"
+
+        repository.insertRewardItem(RewardItem(title = reward1, price = 50, familyId = fId))
+        repository.insertRewardItem(RewardItem(title = reward2, price = 200, familyId = fId))
+        repository.insertRewardItem(RewardItem(title = reward3, price = 500, familyId = fId))
+
+        // 4. Seeding Tasks & Daily Chores
+        val cleanRoomChore = if (isHebrew) "ניקוי חדר השינה" else "Clean Bedroom"
+        val projectFeedback = if (isHebrew) "משוב לפרויקט משפחתי" else "Feedback for Project"
+        val groceryTaskName = if (isHebrew) "קניית מצרכים שבועיים" else "Buy Groceries"
+
+        repository.insertTask(
+            Task(
+                title = cleanRoomChore,
+                isChore = true,
+                assignedToUserId = kid1Id,
+                rewardPoints = 20,
+                priority = Priority.HIGH,
+                familyId = fId
+            )
+        )
+        repository.insertTask(
+            Task(
+                title = projectFeedback,
+                source = TaskSource.EMAIL,
+                priority = Priority.URGENT,
+                familyId = fId
+            )
+        )
+        repository.insertTask(
+            Task(
+                title = groceryTaskName,
+                source = TaskSource.MANUAL,
+                priority = Priority.MEDIUM,
+                familyId = fId
+            )
+        )
+
+        // 5. Seeding Shopping Categories & Items
+        val catFruits = if (isHebrew) "פירות וירקות" else "Fruits & Veggies"
+        val catDairy = if (isHebrew) "מוצרי חלב ומקרר" else "Dairy & Fridge"
+        val catBakery = if (isHebrew) "מאפה ולחם" else "Bakery & Bread"
+
+        val catFruitsId = repository.insertCategory(ShoppingCategory(name = catFruits, familyId = fId)).toInt()
+        val catDairyId = repository.insertCategory(ShoppingCategory(name = catDairy, familyId = fId)).toInt()
+        val catBakeryId = repository.insertCategory(ShoppingCategory(name = catBakery, familyId = fId)).toInt()
+
+        val itemApples = if (isHebrew) "תפוחים" else "Apples"
+        val itemCucumbers = if (isHebrew) "מלפפונים" else "Cucumbers"
+        val itemTomatoes = if (isHebrew) "עגבניות" else "Tomatoes"
+        val itemMilk = if (isHebrew) "חלב 3%" else "Milk 3%"
+        val itemCheese = if (isHebrew) "גבינה צהובה" else "Yellow Cheese"
+        val itemYogurt = if (isHebrew) "יוגורט" else "Yogurt"
+        val itemPitas = if (isHebrew) "פיתות" else "Pita Bread"
+        val itemChallah = if (isHebrew) "חלה לשבת" else "Challah for Shabbat"
+        val itemOliveOil = if (isHebrew) "שמן זית" else "Olive Oil"
+        val itemSalt = if (isHebrew) "מלח" else "Salt"
+
+        repository.insertShoppingItem(ShoppingItem(name = itemApples, categoryId = catFruitsId, position = 0, familyId = fId))
+        repository.insertShoppingItem(ShoppingItem(name = itemCucumbers, categoryId = catFruitsId, position = 1, familyId = fId))
+        repository.insertShoppingItem(ShoppingItem(name = itemTomatoes, categoryId = catFruitsId, position = 2, familyId = fId))
+
+        repository.insertShoppingItem(ShoppingItem(name = itemMilk, categoryId = catDairyId, position = 0, familyId = fId))
+        repository.insertShoppingItem(ShoppingItem(name = itemCheese, categoryId = catDairyId, position = 1, familyId = fId))
+        repository.insertShoppingItem(ShoppingItem(name = itemYogurt, categoryId = catDairyId, position = 2, familyId = fId))
+
+        repository.insertShoppingItem(ShoppingItem(name = itemPitas, categoryId = catBakeryId, position = 0, familyId = fId))
+        repository.insertShoppingItem(ShoppingItem(name = itemChallah, categoryId = catBakeryId, position = 1, familyId = fId))
+
+        repository.insertShoppingItem(ShoppingItem(name = itemOliveOil, categoryId = null, position = 0, familyId = fId))
+        repository.insertShoppingItem(ShoppingItem(name = itemSalt, categoryId = null, position = 1, familyId = fId))
+
+        selectUser(managerProfileId)
+    }
+
+    fun resetAllLocalData(familyName: String, managerName: String, onComplete: () -> Unit = {}) {
+        viewModelScope.launch {
+            try {
+                repository.clearSync()
+                withContext(Dispatchers.IO) {
+                    AppDatabase.getDatabase(context).clearAllTables()
+                }
+                prefs.edit().clear().apply()
+                
+                // Generate a fresh unique randomized family ID upon reset
+                val generatedFamilyId = "family_" + (100000..999999).random().toString()
+                _familyId.value = generatedFamilyId
+                prefs.edit().putString("active_family_id", generatedFamilyId).apply()
+                
+                selectUser(null)
+                _language.value = defaultLanguageCode
+                
+                val isHeb = defaultLanguageCode == "HE"
+                seedFamilyData(generatedFamilyId, familyName, managerName, isHeb)
+                
+                prefs.edit().putBoolean("db_seeded", true).apply()
+                
+                try {
+                    android.widget.Toast.makeText(
+                        context,
+                        if (isHeb) "האפליקציה אופסה בהצלחה!" else "App reset successfully!",
+                        android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                } catch (toastEx: Exception) {
+                    // Fail-safe in case of non-looper thread or UI context issues
+                }
+                
+                onComplete()
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    init {
+        // Do not perform silent auto-seeding with static hardcoded values.
+        // Instead, if there are no existing users, the applet starts up clean, allowing the onboarding
+        // flow to beautifully prompt the user for their customized family and manager credentials.
+        viewModelScope.launch {
+            try {
+                val existingUser = repository.getAnyUser()
+                if (existingUser != null) {
+                    // Already has users, initialize properly
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+}
+
+class TaskViewModelFactory(
+    private val repository: TaskRepository,
+    private val context: Context
+) : ViewModelProvider.Factory {
+    override fun <T : ViewModel> create(modelClass: Class<T>): T {
+        if (modelClass.isAssignableFrom(TaskViewModel::class.java)) {
+            @Suppress("UNCHECKED_CAST")
+            return TaskViewModel(repository, context) as T
+        }
+        throw IllegalArgumentException("Unknown ViewModel class")
+    }
+}

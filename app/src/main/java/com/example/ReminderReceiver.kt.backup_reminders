@@ -1,0 +1,157 @@
+package com.example
+
+import android.app.AlarmManager
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.os.Build
+import androidx.core.app.NotificationCompat
+import java.util.Calendar
+
+class ReminderReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        val action = intent.action ?: return
+        
+        if (action == "com.example.ACTION_DAILY_REMINDER" || 
+            action == "com.example.ACTION_TEST_REMINDER" || 
+            action == Intent.ACTION_BOOT_COMPLETED) {
+
+            val prefs = context.getSharedPreferences("family_prefs", Context.MODE_PRIVATE)
+            val isEnabled = prefs.getBoolean("daily_reminder_enabled", true)
+            
+            if (!isEnabled && action == "com.example.ACTION_DAILY_REMINDER") {
+                cancelDailyReminder(context)
+                return
+            }
+
+            // Reschedule next repeating alarm if it's the daily reminder trigger
+            if (action == "com.example.ACTION_DAILY_REMINDER" && isEnabled) {
+                scheduleDailyReminder(context)
+            }
+
+            // Read settings and trigger notification
+            triggerNotification(context, action == "com.example.ACTION_TEST_REMINDER")
+        }
+    }
+
+    private fun triggerNotification(context: Context, isTest: Boolean) {
+        val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        val channelId = "family_reminder_channel"
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                channelId,
+                "Family Reminders",
+                NotificationManager.IMPORTANCE_DEFAULT
+            ).apply {
+                description = "Channel for daily task reminders"
+            }
+            notificationManager.createNotificationChannel(channel)
+        }
+
+        val prefs = context.getSharedPreferences("family_prefs", Context.MODE_PRIVATE)
+        val currentLang = prefs.getString("app_language", "EN") ?: "EN"
+
+        val title = if (currentLang == "HE") {
+            if (isTest) "תזכורת ניסיון" else "תזכורת ערב יומית"
+        } else {
+            if (isTest) "Test Reminder" else "Daily Evening Reminder"
+        }
+
+        val text = if (currentLang == "HE") {
+            if (isTest) "היי! בדיקת תזכורות עובדת בהצלחה." else "אל תשכחו לבדוק את המטלות שלכם לפני השינה!"
+        } else {
+            if (isTest) "Hey! Your reminder system is working fine." else "Don't forget to complete and check off your tasks for today!"
+        }
+
+        val mainIntent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            context,
+            0,
+            mainIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val notification = NotificationCompat.Builder(context, channelId)
+            .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .build()
+
+        notificationManager.notify(if (isTest) 1102 else 1101, notification)
+    }
+
+    companion object {
+        fun scheduleDailyReminder(context: Context) {
+            val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+            val intent = Intent(context, ReminderReceiver::class.java).apply {
+                action = "com.example.ACTION_DAILY_REMINDER"
+            }
+            val pendingIntent = PendingIntent.getBroadcast(
+                context,
+                1101,
+                intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+
+            val calendar = Calendar.getInstance().apply {
+                timeInMillis = System.currentTimeMillis()
+                set(Calendar.HOUR_OF_DAY, 18)
+                set(Calendar.MINUTE, 0)
+                set(Calendar.SECOND, 0)
+                set(Calendar.MILLISECOND, 0)
+                if (timeInMillis <= System.currentTimeMillis()) {
+                    add(Calendar.DAY_OF_YEAR, 1)
+                }
+            }
+
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    alarmManager.setAndAllowWhileIdle(
+                        AlarmManager.RTC_WAKEUP,
+                        calendar.timeInMillis,
+                        pendingIntent
+                    )
+                } else {
+                    alarmManager.set(
+                        AlarmManager.RTC_WAKEUP,
+                        calendar.timeInMillis,
+                        pendingIntent
+                    )
+                }
+            } catch (e: SecurityException) {
+                try {
+                    alarmManager.set(
+                        AlarmManager.RTC_WAKEUP,
+                        calendar.timeInMillis,
+                        pendingIntent
+                    )
+                } catch (e2: Exception) {
+                    e2.printStackTrace()
+                }
+            }
+        }
+
+        fun cancelDailyReminder(context: Context) {
+            val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+            val intent = Intent(context, ReminderReceiver::class.java).apply {
+                action = "com.example.ACTION_DAILY_REMINDER"
+            }
+            val pendingIntent = PendingIntent.getBroadcast(
+                context,
+                1101,
+                intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            alarmManager.cancel(pendingIntent)
+        }
+    }
+}

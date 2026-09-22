@@ -1,0 +1,6 @@
+{
+  "name": "TaskHub",
+  "description": "Comprehensive task manager with priority organization, recurring tasks, subtasks, and a gamified chore system for kids.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

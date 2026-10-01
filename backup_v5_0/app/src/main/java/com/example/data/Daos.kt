@@ -62,7 +62,7 @@ interface UserDao {
     @Query("SELECT * FROM users LIMIT 1")
     suspend fun getAnyUser(): User?
 
-    @Query("SELECT * FROM users WHERE LOWER(TRIM(name)) = LOWER(TRIM(:name)) AND familyId = :familyId LIMIT 1")
+    @Query("SELECT * FROM users WHERE LOWER(TRIM(name)) = LOWER(TRIM(:name)) AND familyId = :familyId AND remoteId IS NULL LIMIT 1")
     suspend fun getUserByNameAndFamily(name: String, familyId: String): User?
 
     // FamilyRole methods

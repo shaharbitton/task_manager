@@ -182,6 +182,15 @@ data class CelebrationEvent(
 )
 
 fun isScheduledForToday(task: Task): Boolean {
+    val todayStr = String.format(
+        "%04d-%02d-%02d", 
+        java.util.Calendar.getInstance().get(java.util.Calendar.YEAR), 
+        java.util.Calendar.getInstance().get(java.util.Calendar.MONTH) + 1, 
+        java.util.Calendar.getInstance().get(java.util.Calendar.DAY_OF_MONTH)
+    )
+    if (task.pulledForDate == todayStr) return true
+    if (!task.pulledForDate.isNullOrBlank() && task.pulledForDate != todayStr) return false
+
     // If a task is completed on a previous day, it is NOT scheduled for today
     if (task.status == TaskStatus.DONE && task.completedAt != null) {
         val cal = java.util.Calendar.getInstance()
@@ -194,7 +203,27 @@ fun isScheduledForToday(task: Task): Boolean {
             return false
         }
     }
-    return true
+
+    val rule = task.recurrenceRule ?: return true
+    if (rule.isBlank() || rule == "NONE") return true
+    
+    val parts = rule.split(":")
+    val type = parts.getOrNull(0) ?: return true
+    val dayArg = parts.getOrNull(1)
+    
+    val curCal = java.util.Calendar.getInstance()
+    return when (type) {
+        "DAILY" -> true
+        "WEEKLY" -> {
+            val scheduledDay = dayArg?.toIntOrNull() ?: return true
+            curCal.get(java.util.Calendar.DAY_OF_WEEK) == scheduledDay
+        }
+        "MONTHLY" -> {
+            val scheduledDayOfMonth = dayArg?.toIntOrNull() ?: return true
+            curCal.get(java.util.Calendar.DAY_OF_MONTH) == scheduledDayOfMonth
+        }
+        else -> true
+    }
 }
 
 @Serializable

@@ -93,12 +93,6 @@ class TaskViewModel(
 
     val allUsers = familyId.flatMapLatest { fId ->
         repository.getAllUsers(fId)
-    }.map { list ->
-        val seen = mutableSetOf<String>()
-        list.filter { u ->
-            val key = if (!u.remoteId.isNullOrBlank()) "r_${u.remoteId}" else "n_${u.name.trim().lowercase()}"
-            seen.add(key)
-        }
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5000),
@@ -166,16 +160,14 @@ class TaskViewModel(
         viewModelScope.launch {
             familyId.collect { fId ->
                 repository.updateSyncFamilyId(fId)
-                cleanupDuplicateTasks()
-                cleanupDuplicateUsers()
             }
         }
 
-        // 2. Automated Task & User Deduplication (Version 6.0)
+        // 2. Automated Child Task Instance Generation for Recurring parent tasks & sync attributes
         viewModelScope.launch {
-            kotlinx.coroutines.delay(800)
-            cleanupDuplicateTasks()
-            cleanupDuplicateUsers()
+            // Trigger loop-free initial sync after a short delay to let DB/ViewModel settle
+            kotlinx.coroutines.delay(500)
+            syncRecurringInstances()
         }
 
         // 3. Automated End-Of-Day Check: Return active uncompleted/unapproved tasks back to the bank
@@ -219,118 +211,129 @@ class TaskViewModel(
             }
         }
 
-    }
-    
-    fun cleanupDuplicateUsers() {
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                val currentFamily = familyId.value
-                val users = repository.getAllUsersDirect(currentFamily)
-                if (users.isEmpty()) return@launch
-                
-                val grouped = users.groupBy { it.name.trim().lowercase() }
+        // 5. Automated User Duplicate Merging and Cleanup (guarded against reentrancy loops)
+        var isCleaningUpDuplicates = false
+        viewModelScope.launch {
+            allUsers.collect { usersList ->
+                if (usersList.isEmpty() || isCleaningUpDuplicates) return@collect
+                val grouped = usersList.groupBy { it.name.trim().lowercase() }
                 val duplicateGroups = grouped.filter { it.value.size > 1 }
-                if (duplicateGroups.isEmpty()) return@launch
-
-                val tasks = repository.getAllTasksDirect(currentFamily)
-                duplicateGroups.forEach { (_, userList) ->
-                    val sorted = userList.sortedWith(
-                        compareByDescending<User> { !it.remoteId.isNullOrBlank() }
-                            .thenByDescending { it.balance }
-                            .thenBy { it.id }
-                    )
-                    var primaryUser = sorted.first()
-                    val duplicates = sorted.drop(1)
-                    val dupIds = duplicates.map { it.id }.toSet()
-
-                    // Coalesce remoteId and take maximum balance / passcode
-                    var updatedPrimary = primaryUser
-                    duplicates.forEach { dup ->
-                        if (updatedPrimary.remoteId.isNullOrBlank() && !dup.remoteId.isNullOrBlank()) {
-                            updatedPrimary = updatedPrimary.copy(remoteId = dup.remoteId)
+                if (duplicateGroups.isNotEmpty()) {
+                    isCleaningUpDuplicates = true
+                    launch(Dispatchers.IO) {
+                        try {
+                            val currentFamily = familyId.value
+                            val tasks = repository.getAllTasksDirect(currentFamily)
+                            duplicateGroups.forEach { (name, userList) ->
+                                val sorted = userList.sortedBy { it.id }
+                                var primaryUser = sorted.first()
+                                val duplicates = sorted.drop(1)
+                                val dupIds = duplicates.map { it.id }
+                                
+                                // Coalesce remoteId and take maximum/combined balance
+                                var updatedPrimary = primaryUser
+                                duplicates.forEach { dup ->
+                                    if (updatedPrimary.remoteId.isNullOrBlank() && !dup.remoteId.isNullOrBlank()) {
+                                        updatedPrimary = updatedPrimary.copy(remoteId = dup.remoteId)
+                                    }
+                                    if (dup.balance > updatedPrimary.balance) {
+                                        updatedPrimary = updatedPrimary.copy(balance = dup.balance)
+                                    }
+                                }
+                                
+                                if (updatedPrimary != primaryUser) {
+                                    repository.updateUser(updatedPrimary)
+                                    primaryUser = updatedPrimary
+                                }
+                                
+                                tasks.forEach { task ->
+                                    if (task.assignedToUserId in dupIds) {
+                                        repository.updateTask(task.copy(assignedToUserId = primaryUser.id))
+                                    }
+                                }
+                                
+                                duplicates.forEach { dupUser ->
+                                    repository.deleteUserLocallyOnly(dupUser)
+                                    // If have distinct remoteIds, clean up the duplicate user remote doc as we merged onto the main one
+                                    if (!dupUser.remoteId.isNullOrBlank() && dupUser.remoteId != primaryUser.remoteId) {
+                                        repository.deleteUserRemoteOnly(dupUser)
+                                    }
+                                    android.util.Log.d("TaskViewModel", "Cleaned up duplicate user ${dupUser.name} (${dupUser.id}) in favor of ${primaryUser.id}")
+                                }
+                            }
+                        } catch (e: Exception) {
+                            android.util.Log.e("TaskViewModel", "Error cleaning up duplicate users", e)
+                        } finally {
+                            // Settle database flow emissions first to avoid thrashing
+                            kotlinx.coroutines.delay(1000)
+                            isCleaningUpDuplicates = false
                         }
-                        if (dup.balance > updatedPrimary.balance) {
-                            updatedPrimary = updatedPrimary.copy(balance = dup.balance)
-                        }
-                        if (updatedPrimary.passcode.isNullOrBlank() && !dup.passcode.isNullOrBlank()) {
-                            updatedPrimary = updatedPrimary.copy(passcode = dup.passcode)
-                        }
-                    }
-
-                    if (updatedPrimary != primaryUser) {
-                        repository.updateUser(updatedPrimary)
-                        primaryUser = updatedPrimary
-                    }
-
-                    tasks.forEach { task ->
-                        if (task.assignedToUserId in dupIds) {
-                            repository.updateTask(task.copy(assignedToUserId = primaryUser.id))
-                        }
-                    }
-
-                    duplicates.forEach { dupUser ->
-                        repository.deleteUserLocallyOnly(dupUser)
-                        android.util.Log.d("TaskViewModel", "Cleaned up duplicate user ${dupUser.name} (${dupUser.id}) in favor of ${primaryUser.id}")
                     }
                 }
-            } catch (e: Exception) {
-                android.util.Log.e("TaskViewModel", "Error cleaning up duplicate users", e)
             }
         }
     }
     
-    fun cleanupDuplicateTasks() {
+    fun syncRecurringInstances() {
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val fId = familyId.value
-                val tasks = repository.getAllTasksDirect(fId)
-                if (tasks.isEmpty()) return@launch
-
-                // 1. Remove all old child tasks generated by previous recurring systems
-                val children = tasks.filter { it.parentId != null }
-                children.forEach { child ->
-                    repository.deleteTask(child)
-                }
-
-                // 2. Clear lingering recurrence rules and pulled dates on remaining tasks
-                val remainingTasks = repository.getAllTasksDirect(fId)
-                remainingTasks.forEach { task ->
-                    if (!task.recurrenceRule.isNullOrBlank() || task.pulledForDate != null || task.isTemplate) {
-                        repository.updateTask(
-                            task.copy(
-                                recurrenceRule = null,
-                                pulledForDate = null,
-                                isTemplate = false
+                val tasks = repository.getAllMainTasks(fId).first()
+                val chores = repository.getAllChores(fId).first()
+                val list = tasks + chores
+                val todayStr = getTodayString()
+                val parents = list.filter { it.parentId == null && !it.recurrenceRule.isNullOrBlank() && it.recurrenceRule != "NONE" }
+                
+                parents.forEach { parent ->
+                    if (isScheduledForToday(parent)) {
+                        val childExists = list.any { it.parentId == parent.id && it.pulledForDate == todayStr }
+                        if (!childExists) {
+                            // Automatically insert today's Child Task instance
+                            val child = Task(
+                                title = parent.title,
+                                description = parent.description,
+                                priority = parent.priority,
+                                status = TaskStatus.TODO,
+                                parentId = parent.id,
+                                recurrenceRule = null, // child doesn't recur
+                                isChore = parent.isChore,
+                                rewardPoints = parent.rewardPoints,
+                                assignedToUserId = parent.assignedToUserId, // Inherit parent's assignment automatically
+                                pulledForDate = todayStr,
+                                familyId = parent.familyId,
+                                assignedToUserRemoteId = parent.assignedToUserRemoteId,
+                                parentRemoteId = parent.remoteId
                             )
-                        )
-                    }
-                }
-
-                // 3. Remove duplicate tasks with identical title and isChore status
-                val currentTasks = repository.getAllTasksDirect(fId)
-                val grouped = currentTasks.groupBy { "${it.title.trim().lowercase()}__${it.isChore}" }
-                grouped.forEach { (_, group) ->
-                    if (group.size > 1) {
-                        val sorted = group.sortedWith(
-                            compareByDescending<Task> { it.status == TaskStatus.DONE }
-                                .thenByDescending { !it.remoteId.isNullOrBlank() }
-                                .thenByDescending { it.assignedToUserId != null }
-                                .thenBy { it.id }
-                        )
-                        val duplicates = sorted.drop(1)
-                        duplicates.forEach { dup ->
-                            repository.deleteTask(dup)
+                            repository.insertTask(child)
+                        } else {
+                            // If parent has been modified, sync those modifications to uncompleted today's child
+                            val child = list.find { it.parentId == parent.id && it.pulledForDate == todayStr }
+                            if (child != null && child.status == TaskStatus.TODO) {
+                                val expectedAssignee = parent.assignedToUserId ?: child.assignedToUserId
+                                if (child.title != parent.title || 
+                                    child.description != parent.description || 
+                                    child.rewardPoints != parent.rewardPoints || 
+                                    child.isChore != parent.isChore ||
+                                    child.priority != parent.priority ||
+                                    child.assignedToUserId != expectedAssignee) {
+                                    val updatedChild = child.copy(
+                                        title = parent.title,
+                                        description = parent.description,
+                                        priority = parent.priority,
+                                        rewardPoints = parent.rewardPoints,
+                                        isChore = parent.isChore,
+                                        assignedToUserId = expectedAssignee
+                                    )
+                                    repository.updateTask(updatedChild)
+                                }
+                            }
                         }
                     }
                 }
             } catch (e: Exception) {
-                android.util.Log.e("TaskViewModel", "Error cleaning up duplicate tasks", e)
+                android.util.Log.e("TaskViewModel", "Error syncing recurring instances", e)
             }
         }
-    }
-
-    fun syncRecurringInstances() {
-        cleanupDuplicateTasks()
     }
 
     private val _celebrationEvent = MutableStateFlow<CelebrationEvent?>(null)
@@ -473,6 +476,7 @@ class TaskViewModel(
 
     fun checkAndHandleDayTransition() {
         viewModelScope.launch {
+            val nowCal = java.util.Calendar.getInstance()
             val todayStr = getTodayString()
             val lastCheckDate = prefs.getString("last_day_transition_check_date", "") ?: ""
             
@@ -489,22 +493,58 @@ class TaskViewModel(
                 for (task in allTasksList) {
                     // If a task/chore is assigned to someone but was not completed & approved (status != DONE)
                     if (task.assignedToUserId != null && task.status != TaskStatus.DONE) {
-                        // Return uncompleted task to bank by clearing assignee without duplicating
-                        val updatedTask = task.copy(
-                            assignedToUserId = null,
-                            status = TaskStatus.TODO,
-                            completedAt = null,
-                            pulledForDate = null,
-                            recurrenceRule = null
-                        )
-                        repository.updateTask(updatedTask)
+                        val hasRecurrence = !task.recurrenceRule.isNullOrBlank() && task.recurrenceRule != "NONE"
                         
-                        if (task.isChore) {
-                            returnedTaskNamesEn.add("[Chore] ${task.title} (Returned to bank)")
-                            returnedTaskNamesHe.add("[מטלה] ${task.title} (הוחזרה לבנק)")
+                        if (hasRecurrence) {
+                            if (task.pulledForDate != null) {
+                                // Pulled recurring bank task -> Return to bank by resetting assignment and pulledForDate
+                                val updatedTask = task.copy(
+                                    assignedToUserId = null,
+                                    pulledForDate = null,
+                                    status = TaskStatus.TODO,
+                                    completedAt = null
+                                )
+                                repository.updateTask(updatedTask)
+                                
+                                if (task.isChore) {
+                                    returnedTaskNamesEn.add("[Recurring Chore] ${task.title} (Returned to bank)")
+                                    returnedTaskNamesHe.add("[מטלה מחזורית] ${task.title} (הוחזרה לבנק)")
+                                } else {
+                                    returnedTaskNamesEn.add("[Recurring Task] ${task.title} (Returned to bank)")
+                                    returnedTaskNamesHe.add("[משימה מחזורית] ${task.title} (הוחזרה לבנק)")
+                                }
+                            } else {
+                                // Personal recurring task -> Reset status but keep the assignment
+                                val updatedTask = task.copy(
+                                    status = TaskStatus.TODO,
+                                    completedAt = null
+                                )
+                                repository.updateTask(updatedTask)
+                                
+                                if (task.isChore) {
+                                    returnedTaskNamesEn.add("[Recurring Chore] ${task.title} (Reset for today)")
+                                    returnedTaskNamesHe.add("[מטלה מחזורית] ${task.title} (אותחלה ליום החדש)")
+                                } else {
+                                    returnedTaskNamesEn.add("[Recurring Task] ${task.title} (Reset for today)")
+                                    returnedTaskNamesHe.add("[משימה מחזורית] ${task.title} (אותחלה ליום החדש)")
+                                }
+                            }
                         } else {
-                            returnedTaskNamesEn.add("[Task] ${task.title} (Returned to bank)")
-                            returnedTaskNamesHe.add("[משימה] ${task.title} (הוחזרה לבנק)")
+                            // No recurrence -> Return to bank by setting assignedToUserId = null
+                            val updatedTask = task.copy(
+                                assignedToUserId = null,
+                                status = TaskStatus.TODO,
+                                completedAt = null
+                            )
+                            repository.updateTask(updatedTask)
+                            
+                            if (task.isChore) {
+                                returnedTaskNamesEn.add("[Chore] ${task.title} (Returned to bank)")
+                                returnedTaskNamesHe.add("[מטלה] ${task.title} (הוחזרה לבנק)")
+                            } else {
+                                returnedTaskNamesEn.add("[Task] ${task.title} (Returned to bank)")
+                                returnedTaskNamesHe.add("[משימה] ${task.title} (הוחזרה לבנק)")
+                            }
                         }
                     }
                 }
@@ -516,7 +556,7 @@ class TaskViewModel(
             }
             
             prefs.edit().putString("last_day_transition_check_date", todayStr).apply()
-            cleanupDuplicateTasks()
+            syncRecurringInstances()
         }
     }
 
@@ -534,6 +574,88 @@ class TaskViewModel(
             prefs.edit().putString("last_day_transition_check_date", yesterdayStr).apply()
             checkAndHandleDayTransition()
         }
+    }
+
+    private fun getUpcomingScheduledCal(task: Task, refMidnight: java.util.Calendar): java.util.Calendar {
+        val rule = task.recurrenceRule ?: return refMidnight
+        if (rule.isBlank() || rule == "NONE") return refMidnight
+        
+        val parts = rule.split(":")
+        val type = parts.getOrNull(0) ?: return refMidnight
+        val dayArg = parts.getOrNull(1)
+        
+        val cal = refMidnight.clone() as java.util.Calendar
+        when (type) {
+            "DAILY" -> {
+                return cal
+            }
+            "WEEKLY" -> {
+                val scheduledDay = dayArg?.toIntOrNull() ?: return cal
+                var count = 0
+                while (cal.get(java.util.Calendar.DAY_OF_WEEK) != scheduledDay && count < 8) {
+                    cal.add(java.util.Calendar.DAY_OF_YEAR, 1)
+                    count++
+                }
+                return cal
+            }
+            "MONTHLY" -> {
+                val scheduledDayOfMonth = dayArg?.toIntOrNull() ?: return cal
+                var count = 0
+                while (cal.get(java.util.Calendar.DAY_OF_MONTH) != scheduledDayOfMonth && count < 32) {
+                    cal.add(java.util.Calendar.DAY_OF_YEAR, 1)
+                    count++
+                }
+                return cal
+            }
+        }
+        return cal
+    }
+
+    private fun getPreviousScheduledCal(task: Task, upcomingCal: java.util.Calendar): java.util.Calendar {
+        val rule = task.recurrenceRule ?: return upcomingCal
+        if (rule.isBlank() || rule == "NONE") return upcomingCal
+        
+        val parts = rule.split(":")
+        val type = parts.getOrNull(0) ?: return upcomingCal
+        
+        val cal = upcomingCal.clone() as java.util.Calendar
+        when (type) {
+            "DAILY" -> {
+                cal.add(java.util.Calendar.DAY_OF_YEAR, -1)
+            }
+            "WEEKLY" -> {
+                cal.add(java.util.Calendar.DAY_OF_YEAR, -7)
+            }
+            "MONTHLY" -> {
+                cal.add(java.util.Calendar.MONTH, -1)
+            }
+        }
+        return cal
+    }
+
+    private fun shouldResetTask(task: Task, currentTime: Long): Boolean {
+        val completedAt = task.completedAt ?: return false
+        val rule = task.recurrenceRule ?: return false
+        if (rule.isBlank() || rule == "NONE") return false
+        if (task.status != TaskStatus.DONE) return false
+
+        val curCal = java.util.Calendar.getInstance().apply { timeInMillis = currentTime }
+        fun java.util.Calendar.toMidnight() {
+            set(java.util.Calendar.HOUR_OF_DAY, 0)
+            set(java.util.Calendar.MINUTE, 0)
+            set(java.util.Calendar.SECOND, 0)
+            set(java.util.Calendar.MILLISECOND, 0)
+        }
+        val curMidnight = (curCal.clone() as java.util.Calendar).apply { toMidnight() }
+        
+        val compCal = java.util.Calendar.getInstance().apply { timeInMillis = completedAt }
+        val compMidnight = (compCal.clone() as java.util.Calendar).apply { toMidnight() }
+
+        val upcomingCal = getUpcomingScheduledCal(task, curMidnight)
+        val previousCal = getPreviousScheduledCal(task, upcomingCal)
+
+        val completedInCurrentCycle = compMidnight.after(previousCal)
+        return !completedInCurrentCycle
     }
 
     fun addChecklist(name: String, taskId: Int? = null, isPrivate: Boolean = false, creatorId: Int? = null) {
@@ -724,24 +846,31 @@ class TaskViewModel(
                     rewardPoints = rewardPoints,
                     source = source,
                     familyId = familyId.value,
-                    recurrenceRule = null,
-                    isTemplate = false,
+                    recurrenceRule = recurrenceRule,
+                    isTemplate = isTemplate,
                     checkboxListId = autoChecklistId
                 )
             )
-            cleanupDuplicateTasks()
+            syncRecurringInstances()
         }
     }
 
     fun updateTask(task: Task) {
         viewModelScope.launch {
-            repository.updateTask(task.copy(recurrenceRule = null, isTemplate = false))
-            cleanupDuplicateTasks()
+            repository.updateTask(task)
+            syncRecurringInstances()
         }
     }
 
     fun getNextRecurrenceDateStr(parent: Task): String {
-        return ""
+        val nextCal = java.util.Calendar.getInstance()
+        val upcomingCal = getUpcomingScheduledCal(parent, nextCal)
+        val sdf = if (language.value == "HE") {
+            java.text.SimpleDateFormat("dd/MM/yyyy", java.util.Locale.getDefault())
+        } else {
+            java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault())
+        }
+        return sdf.format(upcomingCal.time)
     }
 
     fun completeTask(task: Task) {
@@ -827,11 +956,14 @@ class TaskViewModel(
 
     fun deleteTask(task: Task) {
         viewModelScope.launch {
-            val fId = familyId.value
-            val allCombinedList = allTasks.value + allChores.value
-            val children = allCombinedList.filter { it.parentId == task.id }
-            children.forEach { child ->
-                repository.deleteTask(child)
+            val isParent = task.parentId == null && !task.recurrenceRule.isNullOrBlank() && task.recurrenceRule != "NONE"
+            if (isParent) {
+                val fId = familyId.value
+                val allCombinedList = allTasks.value + allChores.value
+                val children = allCombinedList.filter { it.parentId == task.id }
+                children.forEach { child ->
+                    repository.deleteTask(child)
+                }
             }
             repository.deleteTask(task)
         }
@@ -875,11 +1007,6 @@ class TaskViewModel(
                 prefs.edit().putString("active_family_id", fId).apply()
                 prefs.edit().putBoolean("db_seeded", true).apply()
                 selectUser(null) // Let them pick an existing profile
-                
-                // Allow sync to complete and then clean up any duplicates
-                kotlinx.coroutines.delay(1500)
-                cleanupDuplicateUsers()
-                cleanupDuplicateTasks()
             } catch (e: Exception) {
                 e.printStackTrace()
             } finally {
@@ -896,11 +1023,6 @@ class TaskViewModel(
                 prefs.edit().putString("active_family_id", fId).apply()
                 prefs.edit().putBoolean("db_seeded", true).apply()
                 selectUser(uId) // Log in directly into this profile
-
-                // Allow sync to complete and then clean up any duplicates
-                kotlinx.coroutines.delay(1500)
-                cleanupDuplicateUsers()
-                cleanupDuplicateTasks()
             } catch (e: Exception) {
                 e.printStackTrace()
             } finally {

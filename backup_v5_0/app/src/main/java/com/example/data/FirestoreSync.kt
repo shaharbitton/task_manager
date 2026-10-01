@@ -117,7 +117,6 @@ class FirestoreSync(
         scope.launch {
             ensureAuth()
             startRealtimeSync()
-            kotlinx.coroutines.delay(1200)
             runBackgroundOptimization(newFamilyId)
             ensureFamilyDocumentExists(newFamilyId)
         }
@@ -486,7 +485,6 @@ class FirestoreSync(
             Log.w("FirestoreSync", "startRealtimeSync called but user is not authenticated yet. Skipping listener setup.")
             return
         }
-        stopRealtimeSync()
         // Tasks Real-time Sync
         taskListener = db.collection("families").document(familyId).collection("tasks")
             .addSnapshotListener { snapshot, e ->
@@ -522,10 +520,7 @@ class FirestoreSync(
                                     val finalTaskToSave = remoteTask.copy(
                                         assignedToUserId = resolvedAssigneeId,
                                         parentId = resolvedParentId,
-                                        checkboxListId = resolvedCheckboxListId,
-                                        recurrenceRule = null,
-                                        isTemplate = false,
-                                        pulledForDate = null
+                                        checkboxListId = resolvedCheckboxListId
                                     )
 
                                     when (change.type) {
@@ -728,33 +723,27 @@ class FirestoreSync(
                         snapshot?.documentChanges?.forEach { change ->
                             try {
                                 val remoteUser = change.document.toObject(User::class.java)
-                                val resolvedRemoteId = if (!remoteUser.remoteId.isNullOrBlank()) {
-                                    remoteUser.remoteId
-                                } else {
-                                    change.document.id
-                                }
-                                val effectiveRemoteUser = remoteUser.copy(remoteId = resolvedRemoteId, familyId = familyId)
-                                
-                                userSyncMutex.withLock {
-                                    try {
-                                        val localUser = userDao.getUserByRemoteId(resolvedRemoteId, familyId)
-                                            ?: userDao.getUserByNameAndFamily(remoteUser.name, familyId)
-                                        when (change.type) {
-                                            com.google.firebase.firestore.DocumentChange.Type.ADDED,
-                                            com.google.firebase.firestore.DocumentChange.Type.MODIFIED -> {
-                                                if (localUser == null) {
-                                                    userDao.insertUser(effectiveRemoteUser.copy(id = 0))
-                                                } else {
-                                                    userDao.updateUser(effectiveRemoteUser.copy(id = localUser.id))
-                                                }
-                                            }
-                                            com.google.firebase.firestore.DocumentChange.Type.REMOVED -> {
-                                                localUser?.let { userDao.deleteUser(it) }
+                                try {
+                                    val localUser = if (remoteUser.remoteId != null) {
+                                        userDao.getUserByRemoteId(remoteUser.remoteId, familyId)
+                                    } else {
+                                        userDao.getUserByNameAndFamily(remoteUser.name, familyId)
+                                    }
+                                    when (change.type) {
+                                        com.google.firebase.firestore.DocumentChange.Type.ADDED,
+                                        com.google.firebase.firestore.DocumentChange.Type.MODIFIED -> {
+                                            if (localUser == null) {
+                                                userDao.insertUser(remoteUser.copy(id = 0, familyId = familyId))
+                                            } else {
+                                                userDao.updateUser(remoteUser.copy(id = localUser.id, familyId = familyId))
                                             }
                                         }
-                                    } catch (dbEx: Exception) {
-                                        Log.e("FirestoreSync", "User db sync error", dbEx)
+                                        com.google.firebase.firestore.DocumentChange.Type.REMOVED -> {
+                                            localUser?.let { userDao.deleteUser(it) }
+                                        }
                                     }
+                                } catch (dbEx: Exception) {
+                                    Log.e("FirestoreSync", "User db sync error", dbEx)
                                 }
                             } catch (parseEx: Exception) {
                                 Log.e("FirestoreSync", "Could not deserialize user profile", parseEx)
@@ -920,25 +909,20 @@ class FirestoreSync(
             // 1. Optimize Users
             try {
                 val usersSnapshot = db.collection("families").document(fId).collection("users").get().await()
-                val remoteUsersWithDocs = usersSnapshot.documents.mapNotNull { doc ->
-                    doc.toObject(User::class.java)?.let { u ->
-                        val resId = if (!u.remoteId.isNullOrBlank()) u.remoteId else doc.id
-                        u.copy(remoteId = resId, familyId = fId)
-                    }
-                }
-                val remoteUserIds = remoteUsersWithDocs.mapNotNull { it.remoteId }.toSet()
+                val remoteUsers = usersSnapshot.documents.mapNotNull { it.toObject(User::class.java) }
+                val remoteUserIds = remoteUsers.mapNotNull { it.remoteId }.toSet()
 
-                remoteUsersWithDocs.forEach { remoteUser ->
-                    userSyncMutex.withLock {
-                        val localUser = userDao.getUserByRemoteId(remoteUser.remoteId ?: "", fId)
-                            ?: userDao.getUserByNameAndFamily(remoteUser.name, fId)
+                remoteUsers.forEach { remoteUser ->
+                    val localUser = userDao.getUserByRemoteId(remoteUser.remoteId ?: "", fId)
+                        ?: userDao.getUserByNameAndFamily(remoteUser.name, fId)
 
-                        if (localUser == null) {
-                            userDao.insertUser(remoteUser.copy(id = 0))
-                        } else {
-                            if (localUser.name != remoteUser.name || localUser.balance != remoteUser.balance || localUser.role != remoteUser.role || localUser.remoteId != remoteUser.remoteId) {
-                                userDao.updateUser(remoteUser.copy(id = localUser.id))
-                            }
+                    val finalUserToSave = remoteUser.copy(familyId = fId)
+
+                    if (localUser == null) {
+                        userDao.insertUser(finalUserToSave.copy(id = 0))
+                    } else {
+                        if (localUser.name != remoteUser.name || localUser.balance != remoteUser.balance || localUser.role != remoteUser.role || localUser.remoteId != remoteUser.remoteId) {
+                            userDao.updateUser(finalUserToSave.copy(id = localUser.id))
                         }
                     }
                 }
@@ -991,10 +975,7 @@ class FirestoreSync(
                         assignedToUserId = resolvedAssigneeId,
                         parentId = resolvedParentId,
                         checkboxListId = resolvedCheckboxListId,
-                        familyId = fId,
-                        recurrenceRule = null,
-                        isTemplate = false,
-                        pulledForDate = null
+                        familyId = fId
                     )
 
                     if (localTask == null) {

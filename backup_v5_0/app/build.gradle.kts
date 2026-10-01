@@ -15,8 +15,8 @@ android {
     applicationId = "com.aistudio.taskhub.vfqzw"
     minSdk = 24
     targetSdk = 35
-    versionCode = 13
-    versionName = "6.0"
+    versionCode = 12
+    versionName = "12.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }

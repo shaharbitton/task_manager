@@ -21,7 +21,6 @@ class TaskRepository(
     fun getAllChores(familyId: String): Flow<List<Task>> = taskDao.getAllChores(familyId)
     suspend fun getAllTasksDirect(familyId: String): List<Task> = taskDao.getAllTasksDirect(familyId)
     fun getAllUsers(familyId: String): Flow<List<User>> = userDao.getAllUsers(familyId)
-    suspend fun getAllUsersDirect(familyId: String): List<User> = userDao.getAllUsersDirect(familyId)
     fun getRewardItems(familyId: String): Flow<List<RewardItem>> = rewardDao.getAllRewardItems(familyId)
 
     // Shopping list streams

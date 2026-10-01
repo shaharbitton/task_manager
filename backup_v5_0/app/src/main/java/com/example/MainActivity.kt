@@ -1056,6 +1056,7 @@ fun DashboardScreen(viewModel: TaskViewModel, onNavigateToStore: () -> Unit) {
         allCombined.filter { 
             it.assignedToUserId == activeMemberId && 
             it.source != TaskSource.STORE_REDEMPTION &&
+            !(it.parentId == null && !it.recurrenceRule.isNullOrBlank() && it.recurrenceRule != "NONE") &&
             isScheduledForToday(it)
         }
     }
@@ -1384,7 +1385,11 @@ fun DashboardScreen(viewModel: TaskViewModel, onNavigateToStore: () -> Unit) {
              allCombined.filter { task ->
                  if (task.source == TaskSource.STORE_REDEMPTION) return@filter false
                  if (task.status == TaskStatus.DONE || task.status == TaskStatus.PENDING_APPROVAL) return@filter false
-                 task.assignedToUserId == null
+                 
+                 val isSimpleTask = task.parentId == null && (task.recurrenceRule.isNullOrBlank() || task.recurrenceRule == "NONE")
+                 val isChildTaskForToday = task.parentId != null && task.pulledForDate == todayStr
+                 
+                 (isSimpleTask || isChildTaskForToday) && task.assignedToUserId == null
              }
          }
          PullFromBankDialog(
@@ -1392,11 +1397,16 @@ fun DashboardScreen(viewModel: TaskViewModel, onNavigateToStore: () -> Unit) {
              availableTasks = unclaimedTasks,
              onDismiss = { showPullFromBankDialog = false },
              onPull = { task ->
+                 val todayStr = String.format(
+                     "%04d-%02d-%02d", 
+                     java.util.Calendar.getInstance().get(java.util.Calendar.YEAR), 
+                     java.util.Calendar.getInstance().get(java.util.Calendar.MONTH) + 1, 
+                     java.util.Calendar.getInstance().get(java.util.Calendar.DAY_OF_MONTH)
+                 )
                  val updatedTask = task.copy(
                      assignedToUserId = activeMemberId, 
                      status = TaskStatus.TODO,
-                     pulledForDate = null,
-                     recurrenceRule = null
+                     pulledForDate = todayStr
                  )
                  viewModel.updateTask(updatedTask)
                  showPullFromBankDialog = false
@@ -1434,11 +1444,23 @@ fun PullFromBankDialog(
                             Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                                 Column(Modifier.weight(1f)) {
                                     Text(task.title, fontWeight = FontWeight.Bold)
+                                    val recurrenceText = formatRecurrenceRule(task.recurrenceRule, languageCode)
                                     val subtitle = if (task.isChore) {
-                                        if (isHe) "מטלה • +${task.rewardPoints} נק'"
-                                        else "Chore • +${task.rewardPoints} pts"
+                                        if (isHe) {
+                                            if (!recurrenceText.isNullOrBlank()) "מטלה מחזורית ($recurrenceText) • +${task.rewardPoints} נק'"
+                                            else "מטלה • +${task.rewardPoints} נק'"
+                                        } else {
+                                            if (!recurrenceText.isNullOrBlank()) "Recurring Chore ($recurrenceText) • +${task.rewardPoints} pts"
+                                            else "Chore • +${task.rewardPoints} pts"
+                                        }
                                     } else {
-                                        if (isHe) "משימה" else "Standard Task"
+                                        if (isHe) {
+                                            if (!recurrenceText.isNullOrBlank()) "משימה מחזורית ($recurrenceText)"
+                                            else "משימה"
+                                        } else {
+                                            if (!recurrenceText.isNullOrBlank()) "Recurring Task ($recurrenceText)"
+                                            else "Standard Task"
+                                        }
                                     }
                                     Text(subtitle, style = MaterialTheme.typography.labelSmall, color = Color.Gray)
                                 }
@@ -1522,6 +1544,16 @@ fun TaskItemMyDay(
                     Text(task.description, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
                 }
 
+                // Recurrence Indicator
+                val recurrenceText = formatRecurrenceRule(task.recurrenceRule, if (isHe) "HE" else "EN")
+                if (recurrenceText != null) {
+                    Spacer(Modifier.height(4.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Refresh, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(14.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text(recurrenceText, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                    }
+                }
 
                 // Checklist Status/Link Row
                 val listId = task.checkboxListId
@@ -1665,6 +1697,30 @@ fun TaskItem(
                     Text(task.description, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
                 }
                 
+                // Recurrence status indicator for standard tasks
+                val recurrenceText = formatRecurrenceRule(task.recurrenceRule, if (isHe) "HE" else "EN")
+                if (recurrenceText != null) {
+                    Spacer(Modifier.height(4.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            text = if (task.status == TaskStatus.DONE) {
+                                if (isHe) "תיכנס לתוקף מחדש במחזוריות הבאה" else "Will enter into force again in the next cycle"
+                            } else {
+                                recurrenceText
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
 
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 4.dp)) {
                     val icon = when(task.source) {
@@ -1875,6 +1931,25 @@ fun ChoresScreen(viewModel: TaskViewModel, onNavigateToStore: () -> Unit) {
                                         color = Color.Gray
                                     )
                                     
+                                    val recurrenceText = formatRecurrenceRule(chore.recurrenceRule, currentLang)
+                                    if (recurrenceText != null) {
+                                        Spacer(Modifier.height(4.dp))
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Icon(
+                                                imageVector = Icons.Default.Refresh,
+                                                contentDescription = null,
+                                                tint = MaterialTheme.colorScheme.primary,
+                                                modifier = Modifier.size(14.dp)
+                                            )
+                                            Spacer(Modifier.width(4.dp))
+                                            Text(
+                                                text = if (currentLang == "HE") "תיכנס לתוקף מחדש במחזוריות הבאה" else "Will enter into force again in the next cycle",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.primary,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
+                                    }
                                 }
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     IconButton(
@@ -2139,11 +2214,14 @@ fun ChoresScreen(viewModel: TaskViewModel, onNavigateToStore: () -> Unit) {
                     else {
                         allBankItems.filter { task ->
                             task.status == TaskStatus.TODO &&
+                            task.parentId == null &&
+                            (task.recurrenceRule.isNullOrBlank() || task.recurrenceRule == "NONE") &&
                             (if (user.role == UserRole.ADULT) {
                                 if (selectedFilterUserId == -1) task.assignedToUserId == null
                                 else if (selectedFilterUserId != null) task.assignedToUserId == selectedFilterUserId
                                 else true
                              } else {
+                                // For kid, only show unassigned simple tasks (available chores in the bank)!
                                 task.assignedToUserId == null
                              }) &&
                             (!hideExpired || task.dueDate == null || task.dueDate >= todayStart)
@@ -2151,7 +2229,24 @@ fun ChoresScreen(viewModel: TaskViewModel, onNavigateToStore: () -> Unit) {
                     }
                 }
 
-                val parentTasks = emptyList<Task>()
+                val parentTasks = remember(allBankItems, user, selectedFilterUserId) {
+                    if (user == null) emptyList()
+                    else {
+                        allBankItems.filter { task ->
+                            task.parentId == null &&
+                            !task.recurrenceRule.isNullOrBlank() &&
+                            task.recurrenceRule != "NONE" &&
+                            (if (user.role == UserRole.ADULT) {
+                                if (selectedFilterUserId == -1) task.assignedToUserId == null
+                                else if (selectedFilterUserId != null) task.assignedToUserId == selectedFilterUserId
+                                else true
+                             } else {
+                                // For kid, only show unassigned parent tasks! Note that if the parent task has an assignee, we don't display it in the shared bank for other kids to claim.
+                                task.assignedToUserId == null
+                             })
+                        }
+                    }
+                }
 
                 val completedChores = remember(allBankItems, user, selectedFilterUserId, showCompleted) {
                     if (user == null || !showCompleted) emptyList()
@@ -2565,7 +2660,25 @@ fun ChoresScreen(viewModel: TaskViewModel, onNavigateToStore: () -> Unit) {
                                         val completedStatusText = if (currentLang == "HE") "בוצע בהצלחה והורה אישר!" else "Successfully completed & approved!"
                                         Text("$completedStatusText • +${chore.rewardPoints} ${Localization.get("pts", currentLang)}", style = MaterialTheme.typography.labelMedium, color = Color.Gray)
                                         
-
+                                        val recurrenceText = formatRecurrenceRule(chore.recurrenceRule, currentLang)
+                                        if (recurrenceText != null) {
+                                            Spacer(Modifier.height(4.dp))
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Refresh,
+                                                    contentDescription = null,
+                                                    tint = MaterialTheme.colorScheme.primary,
+                                                    modifier = Modifier.size(14.dp)
+                                                )
+                                                Spacer(Modifier.width(4.dp))
+                                                Text(
+                                                    text = if (currentLang == "HE") "תיכנס לתוקף מחדש במחזוריות הבאה" else "Will enter into force again in the next cycle",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = MaterialTheme.colorScheme.primary,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                            }
+                                        }
                                     }
                                     Icon(
                                         imageVector = Icons.Default.Check,
@@ -2596,7 +2709,7 @@ fun ChoresScreen(viewModel: TaskViewModel, onNavigateToStore: () -> Unit) {
                 showAddChoreDialog = false
                 editingChore = null
             },
-            onConfirm = { title, points, kidId, _, isChore ->
+            onConfirm = { title, points, kidId, recurrenceRule, isChore ->
                 val choreToSave = editingChore
                 if (choreToSave != null) {
                     viewModel.updateTask(
@@ -2604,10 +2717,9 @@ fun ChoresScreen(viewModel: TaskViewModel, onNavigateToStore: () -> Unit) {
                             title = title,
                             rewardPoints = if (isChore) points else 0,
                             assignedToUserId = kidId,
-                            recurrenceRule = null,
+                            recurrenceRule = recurrenceRule,
                             isChore = isChore,
-                            isTemplate = false,
-                            pulledForDate = null
+                            isTemplate = false
                         )
                     )
                     val assignedUser = users.find { it.id == kidId }
@@ -2625,7 +2737,7 @@ fun ChoresScreen(viewModel: TaskViewModel, onNavigateToStore: () -> Unit) {
                         rewardPoints = if (isChore) points else 0,
                         assignedToUserId = kidId,
                         priority = Priority.MEDIUM,
-                        recurrenceRule = null,
+                        recurrenceRule = recurrenceRule,
                         isTemplate = false
                     )
                     val assignedUser = users.find { it.id == kidId }
@@ -2903,6 +3015,25 @@ fun VerifyChoreItem(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text(chore.title, fontWeight = FontWeight.Bold)
+                    val recurrenceText = formatRecurrenceRule(chore.recurrenceRule, languageCode)
+                    if (recurrenceText != null) {
+                        Spacer(Modifier.height(2.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.Refresh,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Spacer(Modifier.width(4.dp))
+                            Text(
+                                text = recurrenceText,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                    }
                     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 4.dp)) {
                         Text("${Localization.get("needs_verification", languageCode)} • ${chore.rewardPoints} ${Localization.get("points", languageCode)}", style = MaterialTheme.typography.labelMedium)
                         if (showAssigneeTag && assignee != null) {
@@ -2977,6 +3108,26 @@ fun ChoreItem(
         Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(chore.title, fontWeight = FontWeight.Bold)
+                
+                val recurrenceText = formatRecurrenceRule(chore.recurrenceRule, languageCode)
+                if (recurrenceText != null) {
+                    Spacer(Modifier.height(2.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            text = recurrenceText,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+                }
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 4.dp)) {
                     if (chore.isChore) {
                         val ptsLabel = Localization.get("points", languageCode)
@@ -2997,6 +3148,26 @@ fun ChoreItem(
                                 style = MaterialTheme.typography.labelSmall,
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                        }
+                    }
+                    if (chore.parentId != null) {
+                        Spacer(Modifier.width(8.dp))
+                        Surface(
+                            color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.4f),
+                            shape = RoundedCornerShape(6.dp)
+                        ) {
+                            val badgeLabel = if (languageCode == "HE") {
+                                if (chore.pulledForDate != null) "מופע ליום ${chore.pulledForDate} 🔁" else "מופע מחזורי 🔁"
+                            } else {
+                                if (chore.pulledForDate != null) "Occurrence for ${chore.pulledForDate} 🔁" else "Recurring Occurrence 🔁"
+                            }
+                            Text(
+                                text = badgeLabel,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onTertiaryContainer
                             )
                         }
                     }
@@ -4096,7 +4267,34 @@ fun AddTaskDialog(languageCode: String, onDismiss: () -> Unit, onAdd: (String, P
     )
 }
 
-fun formatRecurrenceRule(rule: String?, languageCode: String): String? = null
+fun formatRecurrenceRule(rule: String?, languageCode: String): String? {
+    if (rule.isNullOrBlank()) return null
+    val parts = rule.split(":")
+    val type = parts.getOrNull(0) ?: return null
+    val dayArg = parts.getOrNull(1)
+    
+    val isHe = languageCode == "HE"
+    return when (type) {
+        "DAILY" -> if (isHe) "מחזוריות: יומית" else "Recurrence: Daily"
+        "WEEKLY" -> {
+            val dayName = when (dayArg) {
+                "1" -> if (isHe) "ראשון" else "Sunday"
+                "2" -> if (isHe) "שני" else "Monday"
+                "3" -> if (isHe) "שלישי" else "Tuesday"
+                "4" -> if (isHe) "רביעי" else "Wednesday"
+                "5" -> if (isHe) "חמישי" else "Thursday"
+                "6" -> if (isHe) "שישי" else "Friday"
+                "7" -> if (isHe) "שבת" else "Saturday"
+                else -> dayArg ?: ""
+            }
+            if (isHe) "מחזוריות: שבועי ביום $dayName" else "Recurrence: Weekly on $dayName"
+        }
+        "MONTHLY" -> {
+            if (isHe) "מחזוריות: חודשי ב-$dayArg לחודש" else "Recurrence: Monthly on day $dayArg"
+        }
+        else -> null
+    }
+}
 
 @Composable
 fun AddChoreDialog(
@@ -4110,8 +4308,27 @@ fun AddChoreDialog(
     var title by remember { mutableStateOf(existingChore?.title ?: "") }
     var points by remember { mutableStateOf((existingChore?.rewardPoints ?: 10).toString()) }
     
-    var selectedKidId by remember { mutableStateOf<Int?>(existingChore?.assignedToUserId) }
+    val inheritedKidId = parentTask?.assignedToUserId
+    val isKidInheritedAndLocked = inheritedKidId != null
+    var selectedKidId by remember { mutableStateOf<Int?>(inheritedKidId ?: existingChore?.assignedToUserId) }
     var isChoreSelected by remember { mutableStateOf(existingChore?.isChore ?: true) }
+
+    val existingRule = existingChore?.recurrenceRule
+    val initialType = when {
+        existingRule == null -> "NONE"
+        existingRule.startsWith("DAILY") -> "DAILY"
+        existingRule.startsWith("WEEKLY") -> "WEEKLY"
+        existingRule.startsWith("MONTHLY") -> "MONTHLY"
+        else -> "NONE"
+    }
+    val initialDay = when {
+        existingRule != null && existingRule.contains(":") -> existingRule.split(":").getOrNull(1) ?: "1"
+        else -> "1"
+    }
+
+    var recurrenceType by remember { mutableStateOf(initialType) }
+    var selectedDayOfWeek by remember { mutableStateOf(if (initialType == "WEEKLY") initialDay else "1") }
+    var selectedDayOfMonth by remember { mutableStateOf(if (initialType == "MONTHLY") initialDay else "1") }
 
     val isHe = languageCode == "HE"
     val dialogTitle = if (existingChore != null) {
@@ -4176,21 +4393,132 @@ fun AddChoreDialog(
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.Medium
                 )
-                LazyRow(modifier = Modifier.padding(vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    item {
-                        FilterChip(
-                            selected = selectedKidId == null,
-                            onClick = { selectedKidId = null },
-                            label = { Text(if (isHe) "בלתי משויך (בבנק)" else "Unassigned (Bank)") }
+                if (isKidInheritedAndLocked) {
+                    val inheritedMemberName = familyMembers.find { it.id == inheritedKidId }?.name ?: "Unknown"
+                    Spacer(Modifier.height(4.dp))
+                    Surface(
+                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = if (isHe) {
+                                "משויך אוטומטית ל-$inheritedMemberName דרך משימת האב (נעול)"
+                            } else {
+                                "Automatically assigned to $inheritedMemberName via parent task (locked)"
+                            },
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(10.dp)
                         )
                     }
-                    items(familyMembers) { member ->
+                } else {
+                    LazyRow(modifier = Modifier.padding(vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        item {
+                            FilterChip(
+                                selected = selectedKidId == null,
+                                onClick = { selectedKidId = null },
+                                label = { Text(if (isHe) "בלתי משויך (בבנק)" else "Unassigned (Bank)") }
+                            )
+                        }
+                        items(familyMembers) { member ->
+                            FilterChip(
+                                selected = selectedKidId == member.id,
+                                onClick = { selectedKidId = member.id },
+                                label = { Text(member.name) }
+                            )
+                        }
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+                
+                // Recurrence Header
+                Text(
+                    text = if (isHe) "מחזוריות משימה:" else "Task/Chore Recurrence:",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium
+                )
+                Spacer(Modifier.height(4.dp))
+                
+                val recurrenceOptions = listOf(
+                    "NONE" to (if (isHe) "ללא" else "None"),
+                    "DAILY" to (if (isHe) "יומית" else "Daily"),
+                    "WEEKLY" to (if (isHe) "שבועית" else "Weekly"),
+                    "MONTHLY" to (if (isHe) "חודשית" else "Monthly")
+                )
+                
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    recurrenceOptions.forEach { (typeKey, typeLabel) ->
                         FilterChip(
-                            selected = selectedKidId == member.id,
-                            onClick = { selectedKidId = member.id },
-                            label = { Text(member.name) }
+                            selected = recurrenceType == typeKey,
+                            onClick = { recurrenceType = typeKey },
+                            label = { Text(typeLabel) }
                         )
                     }
+                }
+                
+                // Day Selectors
+                if (recurrenceType == "WEEKLY") {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = if (isHe) "בחר יום בשבוע:" else "Select Day of Week:",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.Gray
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    val daysOfWeek = if (isHe) {
+                        listOf("א'", "ב'", "ג'", "ד'", "ה'", "ו'", "ש'")
+                    } else {
+                        listOf("S", "M", "T", "W", "T", "F", "S")
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        daysOfWeek.forEachIndexed { index, day ->
+                            val dayValue = (index + 1).toString()
+                            val isSel = selectedDayOfWeek == dayValue
+                            Box(
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .clip(CircleShape)
+                                    .background(if (isSel) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant)
+                                    .clickable { selectedDayOfWeek = dayValue },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = day,
+                                    color = if (isSel) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+                } else if (recurrenceType == "MONTHLY") {
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = selectedDayOfMonth,
+                        onValueChange = { input ->
+                            if (input.isEmpty()) {
+                                selectedDayOfMonth = ""
+                            } else {
+                                val num = input.toIntOrNull()
+                                  if (num != null && num in 1..31) {
+                                      selectedDayOfMonth = num.toString()
+                                  }
+                            }
+                        },
+                        label = { Text(if (isHe) "יום בחודש (1-31)" else "Day of Month (1-31)") },
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Number
+                        ),
+                        modifier = Modifier.width(140.dp)
+                    )
                 }
             }
         },
@@ -4198,11 +4526,17 @@ fun AddChoreDialog(
             Button(
                 onClick = { 
                     if (title.isNotBlank()) {
+                        val recurrenceRule = when (recurrenceType) {
+                            "DAILY" -> "DAILY"
+                            "WEEKLY" -> "WEEKLY:$selectedDayOfWeek"
+                            "MONTHLY" -> "MONTHLY:${selectedDayOfMonth.ifBlank { "1" }}"
+                            else -> null
+                        }
                         onConfirm(
                             title, 
                             if (isChoreSelected) (points.toIntOrNull() ?: 10) else 0, 
                             selectedKidId, 
-                            null, 
+                            recurrenceRule, 
                             isChoreSelected
                         )
                     }
@@ -4891,25 +5225,6 @@ fun SettingsMainDashboard(
             onClick = { viewModel.toggleLanguage() },
             testTag = "category_language"
         )
-
-        Spacer(Modifier.height(24.dp))
-        Box(
-            modifier = Modifier.fillMaxWidth(),
-            contentAlignment = Alignment.Center
-        ) {
-            Surface(
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Text(
-                    text = if (currentLang == "HE") "גרסה 6.0 • ללא שיכפול משימות" else "Version 6.0 • Single Instance Mode",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
-                )
-            }
-        }
-        Spacer(Modifier.height(16.dp))
     }
 }
 
